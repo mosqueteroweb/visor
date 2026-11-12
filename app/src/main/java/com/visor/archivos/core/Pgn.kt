@@ -35,5 +35,9 @@ object Pgn {
     fun analysisUrl(game: String): String =
         "https://www.chess.com/analysis?tab=analysis&pgn=" + URLEncoder.encode(game, "UTF-8").replace("+", "%20")
 
+    /** Enlace que abre la partida en el tablero de análisis de Lichess. */
+    fun lichessUrl(game: String): String =
+        "https://lichess.org/analysis/pgn/" + URLEncoder.encode(game, "UTF-8").replace("+", "%20")
+
     private fun String?.known(): String? = this?.trim()?.takeUnless { it.isEmpty() || it == "?" }
 }

@@ -103,3 +103,27 @@ class PgnTest {
         )
     }
 }
+
+class DataTest {
+    @Test fun `csv con comillas y separador detectado`() {
+        val t = Csv.parse("nombre;nota;comentario\r\nAna;9,5;\"dijo \"\"hola\"\"; y se fue\"\r\n\r\nLuis;7;\"dos\nlíneas\"\n")
+        assertEquals(listOf("nombre", "nota", "comentario"), t.header)
+        assertEquals(listOf(listOf("Ana", "9,5", "dijo \"hola\"; y se fue"), listOf("Luis", "7", "dos\nlíneas")), t.rows)
+        assertEquals(3, t.columns)
+        assertEquals('\t', Csv.detectDelimiter("a\tb\tc\n1\t2,5\t3"))
+        assertEquals(',', Csv.detectDelimiter("sin separadores"))
+        assertTrue(Csv.isCsv("datos.CSV", null) && Csv.isCsv("x", "text/tab-separated-values") && !Csv.isCsv("x.txt", "text/plain"))
+    }
+
+    @Test fun `json formateado sin alterar el contenido`() {
+        val src = "{\"a\":[1,2.50,{}],\"b\":\"x,y:{\\\"\",\"c\":[]}"
+        assertEquals(
+            "{\n  \"a\": [\n    1,\n    2.50,\n    {}\n  ],\n  \"b\": \"x,y:{\\\"\",\n  \"c\": []\n}",
+            JsonFormat.pretty(src),
+        )
+        assertEquals("{\n  \"a\": 1\n}\n{\n  \"a\": 2\n}", JsonFormat.pretty("{\"a\":1}\n{\"a\":2}\n"))
+        assertTrue(JsonFormat.looksMinified("{" + "\"k\":1,".repeat(100) + "}"))
+        assertTrue(!JsonFormat.looksMinified("{\n  \"a\": 1\n}"))
+        assertEquals("https://lichess.org/analysis/pgn/1.%20e4%20e5", Pgn.lichessUrl("1. e4 e5"))
+    }
+}

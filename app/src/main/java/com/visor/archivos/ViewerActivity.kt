@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -44,6 +45,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -66,6 +68,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,9 +76,12 @@ import androidx.core.content.FileProvider
 import androidx.core.content.IntentCompat
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownTypography
+import com.visor.archivos.core.Csv
+import com.visor.archivos.core.DecodedText
 import com.visor.archivos.core.DocInfo
 import com.visor.archivos.core.Docs
 import com.visor.archivos.core.FileKind
+import com.visor.archivos.core.JsonFormat
 import com.visor.archivos.core.Pgn
 import com.visor.archivos.core.PgnGame
 import com.visor.archivos.core.Syntax
@@ -90,7 +96,9 @@ import com.visor.archivos.viewers.CenteredMessage
 import com.visor.archivos.viewers.HexViewer
 import com.visor.archivos.viewers.ImageViewer
 import com.visor.archivos.viewers.PdfViewer
+import com.visor.archivos.viewers.Printer
 import com.visor.archivos.viewers.SearchState
+import com.visor.archivos.viewers.TableViewer
 import com.visor.archivos.viewers.TextViewer
 import com.visor.archivos.viewers.extractPdfText
 import com.visor.archivos.viewers.pdfTextSupported
@@ -143,7 +151,7 @@ class ViewerActivity : ComponentActivity() {
     }
 }
 
-private enum class ViewMode { TEXT, MARKDOWN, IMAGE, PDF, HEX }
+private enum class ViewMode { TEXT, MARKDOWN, TABLE, IMAGE, PDF, HEX }
 
 private sealed interface Load<out T> {
     data object Loading : Load<Nothing>
@@ -177,15 +185,20 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
     var showSource by rememberSaveable { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
-    var loadedText by remember { mutableStateOf<String?>(null) }
-    var pgnChoices by remember { mutableStateOf<List<PgnGame>?>(null) }
+    var loadedDoc by remember { mutableStateOf<TextDoc?>(null) }
+    val loadedText = loadedDoc?.text
+    // null = automático: se formatea solo si el JSON viene en líneas larguísimas
+    var formatJson by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var jsonFormatted by remember { mutableStateOf(false) }
+    var showGoTo by remember { mutableStateOf(false) }
+    var pgnChoices by remember { mutableStateOf<Pair<ChessSite, List<PgnGame>>?>(null) }
     val search = remember { SearchState() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
     val doc = (info as? Load.Ready)?.value
     val natural = when (doc?.kind) {
-        FileKind.TEXT -> ViewMode.TEXT
+        FileKind.TEXT -> if (Csv.isCsv(doc.name, doc.mime)) ViewMode.TABLE else ViewMode.TEXT
         FileKind.MARKDOWN -> ViewMode.MARKDOWN
         FileKind.IMAGE -> ViewMode.IMAGE
         FileKind.PDF -> ViewMode.PDF
@@ -196,14 +209,30 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
     val showsRows = mode == ViewMode.TEXT || (mode == ViewMode.MARKDOWN && showSource)
 
     val pdfAsText = doc?.kind == FileKind.PDF && mode == ViewMode.TEXT && pdfTextSupported
-    val canSearch = showsRows || (mode == ViewMode.PDF && pdfTextSupported)
-    val hasText = showsRows || mode == ViewMode.MARKDOWN || (mode == ViewMode.PDF && pdfTextSupported)
+    val canSearch = showsRows || mode == ViewMode.TABLE || (mode == ViewMode.PDF && pdfTextSupported)
+    val hasText = showsRows || mode == ViewMode.MARKDOWN || mode == ViewMode.TABLE || (mode == ViewMode.PDF && pdfTextSupported)
+    val isJson = doc != null && mode == ViewMode.TEXT && !pdfAsText && TypeDetector.syntaxFor(doc.name, doc.mime) == Syntax.JSON
+    val activity = context as? android.app.Activity
     val isPgn = doc != null && mode == ViewMode.TEXT && natural == ViewMode.TEXT && TypeDetector.isPgn(doc.name, doc.mime)
 
     BackHandler(enabled = search.open) { search.close() }
     LaunchedEffect(mode, showSource) {
         search.close()
-        if (mode != ViewMode.TEXT && mode != ViewMode.MARKDOWN) loadedText = null
+        if (mode != ViewMode.TEXT && mode != ViewMode.MARKDOWN && mode != ViewMode.TABLE) loadedDoc = null
+    }
+
+    fun print() {
+        val name = doc?.name ?: return
+        val text = loadedText
+        if (activity == null) return
+        when (mode) {
+            ViewMode.PDF -> Printer.pdf(activity, uri, name)
+            ViewMode.IMAGE -> Printer.image(activity, uri, name)
+            ViewMode.MARKDOWN -> if (text != null) { if (showSource) Printer.text(activity, text, name) else Printer.markdown(activity, text, name) }
+            ViewMode.TABLE -> if (text != null) Printer.table(activity, Csv.parse(text), name)
+            ViewMode.TEXT -> if (text != null) Printer.text(activity, text, name)
+            ViewMode.HEX, null -> Unit
+        }
     }
 
     fun copyAll() {
@@ -243,7 +272,7 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                     actions = {
                         if (canSearch) IconButton(onClick = { search.open = true }) { Icon(Icons.Filled.Search, "Buscar") }
                         if (doc != null) {
-                            IconButton(onClick = { openElsewhere(context, doc, Intent.ACTION_SEND) }) { Icon(Icons.Filled.Share, "Compartir") }
+                            IconButton(onClick = { openElsewhere(context, doc, Intent.ACTION_SEND, isPgn) }) { Icon(Icons.Filled.Share, "Compartir") }
                             IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, "Más opciones") }
                             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                                 @Composable
@@ -254,6 +283,9 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                                     entry(if (showSource) "Ver con formato" else "Ver código fuente") { showSource = !showSource }
                                 }
                                 if (showsRows) entry(if (wrap) "No ajustar líneas" else "Ajustar líneas") { wrap = !wrap }
+                                if (isJson) entry(if (jsonFormatted) "Ver JSON original" else "Formatear JSON") { formatJson = !jsonFormatted }
+                                if (showsRows) entry("Ir a la línea…") { showGoTo = true }
+                                if (mode == ViewMode.TABLE) entry("Ir a la fila…") { showGoTo = true }
                                 if (hasText) entry("Copiar todo el texto") { copyAll() }
                                 if (hasText) HorizontalDivider()
                                 if (forced != null) entry("Vista original") { forced = null }
@@ -263,7 +295,8 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                                 if (mode != ViewMode.HEX) entry("Ver en hexadecimal") { forced = ViewMode.HEX }
                                 HorizontalDivider()
                                 entry("Información") { showInfo = true }
-                                entry("Abrir con otra app") { openElsewhere(context, doc, Intent.ACTION_VIEW) }
+                                if (mode != ViewMode.HEX) entry("Imprimir") { print() }
+                                entry("Abrir con otra app") { openElsewhere(context, doc, Intent.ACTION_VIEW, isPgn) }
                             }
                         }
                     },
@@ -273,21 +306,25 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
         floatingActionButton = {
             val text = loadedText
             if (isPgn && text != null && !search.open) {
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        val games = Pgn.games(text)
-                        if (games.size > 1) pgnChoices = games else analyzeOnChessCom(context, games.firstOrNull()?.text ?: text)
-                    },
-                    icon = { Text("♞", fontSize = 22.sp) },
-                    text = { Text("Analizar en chess.com") },
-                )
+                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    for (site in ChessSite.entries) {
+                        ExtendedFloatingActionButton(
+                            onClick = {
+                                val games = Pgn.games(text)
+                                if (games.size > 1) pgnChoices = site to games else analyze(context, site, games.firstOrNull()?.text ?: text)
+                            },
+                            icon = { Text(site.icon, fontSize = 22.sp) },
+                            text = { Text("Analizar en ${site.label}") },
+                        )
+                    }
+                }
             }
         },
     ) { padding ->
         // Los visores ocupan toda la pantalla y reciben el hueco inferior como relleno del contenido
         val topOnly = Modifier.padding(top = padding.calculateTopPadding())
         // Con el botón de chess.com, hueco extra para que no tape las últimas líneas
-        val bottom = PaddingValues(bottom = padding.calculateBottomPadding() + if (isPgn) 96.dp else 8.dp)
+        val bottom = PaddingValues(bottom = padding.calculateBottomPadding() + if (isPgn) 168.dp else 8.dp)
 
         when (val state = info) {
             Load.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -309,32 +346,38 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                         is Load.Ready -> HexViewer(b.value.first, b.value.second, bottom, topOnly)
                     }
                 }
-                ViewMode.TEXT, ViewMode.MARKDOWN, null -> {
-                    val text by produceState<Load<TextDoc>>(Load.Loading, uri, pdfAsText) {
+                ViewMode.TEXT, ViewMode.MARKDOWN, ViewMode.TABLE, null -> {
+                    val text by produceState<Load<TextDoc>>(Load.Loading, uri, pdfAsText, formatJson, isJson) {
                         value = try {
                             if (pdfAsText) {
                                 val extracted = extractPdfText(context, uri)
                                 withContext(Dispatchers.Default) {
-                                    Load.Ready(TextDoc.build(com.visor.archivos.core.DecodedText(extracted, "UTF-8"), Syntax.NONE, false))
+                                    Load.Ready(TextDoc.build(DecodedText(extracted, "UTF-8"), Syntax.NONE, false))
                                 }
                             } else {
                                 val (bytes, truncated) = Docs.readLimited(context, uri, MAX_TEXT_BYTES)
                                 withContext(Dispatchers.Default) {
                                     val syntax = TypeDetector.syntaxFor(state.value.name, state.value.mime)
-                                    Load.Ready(TextDoc.build(TextDecoder.decode(bytes, truncated), syntax, truncated))
+                                    val decoded = TextDecoder.decode(bytes, truncated)
+                                    // Un JSON cortado por el límite de tamaño no se puede sangrar con garantías
+                                    val pretty = isJson && !truncated && (formatJson ?: JsonFormat.looksMinified(decoded.text))
+                                    jsonFormatted = pretty
+                                    val shown = if (pretty) DecodedText(JsonFormat.pretty(decoded.text), decoded.charset) else decoded
+                                    Load.Ready(TextDoc.build(shown, syntax, truncated))
                                 }
                             }
                         } catch (e: Throwable) {
                             Load.Failed(errorMessage(e))
                         }
                     }
-                    LaunchedEffect(text) { loadedText = (text as? Load.Ready)?.value?.text }
+                    LaunchedEffect(text) { loadedDoc = (text as? Load.Ready)?.value }
                     when (val t = text) {
                         Load.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                         is Load.Failed -> CenteredMessage("No se puede abrir", t.message, Modifier.padding(padding))
                         is Load.Ready -> when {
                             t.value.text.isEmpty() && pdfAsText -> CenteredMessage("PDF sin texto", "Sus páginas son imágenes, así que no hay texto que extraer.", Modifier.padding(padding))
                             t.value.text.isEmpty() -> CenteredMessage("Archivo vacío", "No contiene texto.", Modifier.padding(padding))
+                            mode == ViewMode.TABLE -> TableViewer(t.value.text, search, listState, bottom, topOnly)
                             showsRows -> TextViewer(t.value, wrap, search, listState, bottom, topOnly)
                             else -> MarkdownView(t.value.text, bottom, topOnly)
                         }
@@ -344,7 +387,22 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
         }
     }
 
-    pgnChoices?.let { games ->
+    if (showGoTo) {
+        val table = mode == ViewMode.TABLE
+        GoToDialog(
+            label = if (table) "Número de fila" else "Número de línea",
+            max = if (table) null else loadedDoc?.lineCount,
+            onDismiss = { showGoTo = false },
+            onGo = { number ->
+                showGoTo = false
+                // En la tabla la cabecera ocupa la posición 0, así que la fila N está en N
+                val index = if (table) number else loadedDoc?.rows?.indexOfFirst { it.number == number } ?: -1
+                if (index >= 0) scope.launch { listState.scrollToItem(index) }
+            },
+        )
+    }
+
+    pgnChoices?.let { (site, games) ->
         AlertDialog(
             onDismissRequest = { pgnChoices = null },
             confirmButton = { TextButton(onClick = { pgnChoices = null }) { Text("Cancelar") } },
@@ -357,7 +415,7 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                                 .fillMaxWidth()
                                 .clickable {
                                     pgnChoices = null
-                                    analyzeOnChessCom(context, game.text)
+                                    analyze(context, site, game.text)
                                 }
                                 .padding(vertical = 10.dp),
                         ) {
@@ -375,6 +433,30 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
     if (showInfo && doc != null) {
         ModalBottomSheet(onDismissRequest = { showInfo = false }) { InfoSheet(doc) }
     }
+}
+
+@Composable
+private fun GoToDialog(label: String, max: Int?, onDismiss: () -> Unit, onGo: (Int) -> Unit) {
+    var value by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    val number = value.toIntOrNull()?.takeIf { it >= 1 }?.let { if (max != null) it.coerceAtMost(max) else it }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (max != null) "$label (1–$max)" else label) },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { new -> value = new.filter(Char::isDigit).take(9) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { number?.let(onGo) }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
+            )
+        },
+        confirmButton = { TextButton(onClick = { number?.let(onGo) }, enabled = number != null) { Text("Ir") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
 }
 
 @Composable
@@ -460,8 +542,9 @@ private fun InfoSheet(doc: DocInfo) {
     }
 }
 
-private fun openElsewhere(context: Context, doc: DocInfo, action: String) {
-    val type = doc.mime ?: "*/*"
+private fun openElsewhere(context: Context, doc: DocInfo, action: String, pgn: Boolean = false) {
+    // Con su tipo propio, las apps de ajedrez (Lichess entre ellas) se ofrecen para abrir la partida
+    val type = if (pgn) "application/x-chess-pgn" else doc.mime ?: "*/*"
     val intent = Intent(action).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     if (action == Intent.ACTION_SEND) {
         intent.setType(type).putExtra(Intent.EXTRA_STREAM, doc.uri)
@@ -491,17 +574,22 @@ private fun copyText(context: Context, text: String): Boolean {
     return true
 }
 
-/** Abre la partida en el tablero de análisis de chess.com (la app, si está instalada y acepta el enlace; si no, el navegador). */
-private fun analyzeOnChessCom(context: Context, game: String) {
-    val url = Pgn.analysisUrl(game)
+private enum class ChessSite(val label: String, val icon: String, val pasteUrl: String, val url: (String) -> String) {
+    CHESS_COM("chess.com", "♞", "https://www.chess.com/analysis?tab=analysis", Pgn::analysisUrl),
+    LICHESS("Lichess", "♘", "https://lichess.org/paste", Pgn::lichessUrl),
+}
+
+/** Abre la partida en el tablero de análisis del sitio (su app, si captura el enlace; si no, el navegador). */
+private fun analyze(context: Context, site: ChessSite, game: String) {
+    val url = site.url(game)
     val target = if (url.length <= Pgn.MAX_URL_CHARS) {
         url
     } else {
         // Demasiado larga para viajar en el enlace: se lleva en el portapapeles
         if (!copyText(context, game)) return
-        toast(context, "Partida copiada: pégala en «Cargar PGN» de chess.com")
-        "https://www.chess.com/analysis?tab=analysis"
+        toast(context, "Partida copiada: pégala en ${site.label}")
+        site.pasteUrl
     }
     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
-        .onFailure { toast(context, "No hay navegador ni app para abrir chess.com") }
+        .onFailure { toast(context, "No hay navegador ni app para abrir ${site.label}") }
 }

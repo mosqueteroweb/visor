@@ -8,16 +8,18 @@ Aparece en «Abrir con» y en «Compartir» de cualquier app, y no pide ningún 
 
 | Tipo | Detalles |
 |---|---|
-| Texto y código | Números de línea, resaltado de sintaxis, búsqueda, ajuste de línea opcional. UTF-8, UTF-16 y Windows-1252 |
+| Texto y código | Números de línea, resaltado de sintaxis, búsqueda, ir a una línea, ajuste de línea opcional. UTF-8, UTF-16 y Windows-1252 |
+| JSON | Se sangra solo si viene en una única línea; se puede alternar con el original |
+| CSV y TSV | Como tabla con cabecera fija, búsqueda por filas e ir a una fila. Detecta el separador |
 | Markdown | Con formato o en código fuente |
-| Partidas PGN | Como texto resaltado, con un botón para analizarlas en chess.com (si hay varias, se elige cuál) |
+| Partidas PGN | Como texto resaltado, con botones para analizarlas en chess.com o en Lichess (si hay varias, se elige cuál) |
 | Imágenes | JPG, PNG, WebP, GIF, HEIC, AVIF, BMP y SVG, con zoom |
 | PDF | Páginas continuas, zoom con dos dedos o doble toque, búsqueda de texto y vista solo texto |
 | Cualquier otro | Volcado hexadecimal |
 
 El tipo se decide por el contenido del archivo, no por su extensión. Desde el menú se puede forzar la vista de texto o la hexadecimal.
 
-Todos los archivos se pueden compartir con otra app desde la barra superior. El texto se selecciona con una pulsación larga, y «Copiar todo el texto» está en el menú.
+Todos los archivos se pueden compartir con otra app desde la barra superior. El texto se selecciona con una pulsación larga, y «Copiar todo el texto» está en el menú, igual que «Imprimir» (impresora o guardar como PDF).
 
 Límites:
 
