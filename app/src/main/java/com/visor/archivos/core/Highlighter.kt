@@ -32,6 +32,11 @@ object Highlighter {
     // Grupos: 1 comentario, 2 etiqueta, 3 cadena, 4 atributo
     private val markup = Regex("(<!--[\\s\\S]*?-->)|(</?[A-Za-z_!?][\\w:.\\-]*|[/?]?>)|(\"[^\"]*\"|'[^']*')|([\\w:.\\-]+(?==))")
 
+    // Grupos: 1 comentario, 2 cadena, 3 nombre de etiqueta, 4 resultado, 5 número de jugada
+    private val pgn = Regex(
+        "(\\{[^}]*\\}|;[^\\n]*)|(\"(?:\\\\.|[^\"\\\\\\n])*\")|((?<=\\[)[A-Za-z0-9_]+)|(1-0|0-1|1/2-1/2)|(\\b\\d+\\.(?:\\.\\.)?)",
+    )
+
     private val cKeywords = (
         "abstract as async await break case catch class companion const continue data def default defer do else enum " +
             "export extends extern final finally fn for func fun function go if impl implements import in interface internal " +
@@ -59,6 +64,7 @@ object Highlighter {
         Syntax.HASH -> scanWords(text, hash) { it in hashKeywords }
         Syntax.SQL -> scanWords(text, sql) { it.lowercase() in sqlKeywords }
         Syntax.KEY_VALUE -> scan(text, keyValue, Token.COMMENT, Token.STRING, Token.KEY, Token.NUMBER, Token.KEYWORD)
+        Syntax.PGN -> scan(text, pgn, Token.COMMENT, Token.STRING, Token.KEY, Token.KEYWORD, Token.NUMBER)
         Syntax.MARKUP -> scan(text, markup, Token.COMMENT, Token.KEYWORD, Token.STRING, Token.KEY)
         Syntax.JSON -> json.findAll(text).mapNotNull { m ->
             when {

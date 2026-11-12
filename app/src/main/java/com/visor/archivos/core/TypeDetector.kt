@@ -4,7 +4,7 @@ package com.visor.archivos.core
 enum class FileKind { TEXT, MARKDOWN, IMAGE, PDF, BINARY }
 
 /** Familias de sintaxis que sabe colorear [Highlighter]. */
-enum class Syntax { NONE, C_LIKE, HASH, KEY_VALUE, JSON, MARKUP, SQL }
+enum class Syntax { NONE, C_LIKE, HASH, KEY_VALUE, JSON, MARKUP, SQL, PGN }
 
 /**
  * Decide el tipo de un archivo mirando primero su contenido (cabecera) y solo después
@@ -34,7 +34,12 @@ object TypeDetector {
     fun extensionOf(name: String?): String =
         name?.substringAfterLast('.', "")?.lowercase().orEmpty()
 
+    /** Partidas de ajedrez en texto: por extensión o por tipo declarado. */
+    fun isPgn(name: String?, mime: String?): Boolean =
+        extensionOf(name) == "pgn" || mime?.lowercase()?.contains("chess-pgn") == true
+
     fun syntaxFor(name: String?, mime: String?): Syntax {
+        if (isPgn(name, mime)) return Syntax.PGN
         val m = mime?.lowercase().orEmpty()
         val lower = name?.lowercase().orEmpty()
         return when (extensionOf(name)) {

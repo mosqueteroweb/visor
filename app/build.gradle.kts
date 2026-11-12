@@ -15,6 +15,15 @@ val appVersionName = listOf("VERSION_MAJOR", "VERSION_MINOR", "VERSION_PATCH")
     .joinToString(".") { versionProps.getProperty(it) }
 val appVersionCode = versionProps.getProperty("VERSION_CODE").toInt()
 
+// Firma de distribución: variables de entorno en GitHub, o ~/.config/visor/signing.properties en el Mac.
+// Sin ninguna de las dos, la release se firma con la clave de depuración (solo sirve para pruebas).
+val signingProps = Properties().apply {
+    val local = File(System.getProperty("user.home"), ".config/visor/signing.properties")
+    if (local.exists()) local.inputStream().use { load(it) }
+}
+fun signingValue(name: String): String? =
+    System.getenv(name)?.takeIf { it.isNotBlank() } ?: signingProps.getProperty(name)
+
 android {
     namespace = "com.visor.archivos"
     compileSdk = 36
@@ -29,10 +38,20 @@ android {
         setProperty("archivesBaseName", "visor-$appVersionName")
     }
 
+    signingConfigs {
+        signingValue("KEYSTORE_PATH")?.let { path ->
+            create("release") {
+                storeFile = file(path)
+                storePassword = signingValue("KEYSTORE_PASSWORD")
+                keyAlias = signingValue("KEY_ALIAS")
+                keyPassword = signingValue("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // Sin almacén de claves propio: el APK de distribución se firma con la clave de depuración del Mac.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

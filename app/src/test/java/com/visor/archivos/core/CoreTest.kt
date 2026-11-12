@@ -64,3 +64,42 @@ class CoreTest {
         assertEquals(2, doc.spansFor(doc.rows[1]).size)
     }
 }
+
+class PgnTest {
+    private val two = """
+        [Event "Torneo"]
+        [White "Ana"]
+        [Black "Luis"]
+        [Result "1-0"]
+
+        1. e4 e5 {apertura abierta} 2. Nf3 1-0
+
+        [Event "?"]
+        [White "?"]
+        [Black "Eva"]
+        [Result "*"]
+
+        1. d4 *
+    """.trimIndent()
+
+    @Test fun `parte el archivo en partidas`() {
+        val games = Pgn.games(two)
+        assertEquals(2, games.size)
+        assertEquals("Ana – Luis", games[0].title)
+        assertEquals("1-0 · Torneo", games[0].detail)
+        assertEquals("? – Eva", games[1].title)
+        assertTrue(games[1].text.startsWith("[Event \"?\"]") && games[1].text.endsWith("1. d4 *"))
+        assertEquals(listOf("Partida 1"), Pgn.games("1. e4 e5 2. Nf3").map { it.title })
+    }
+
+    @Test fun `enlace de analisis y sintaxis`() {
+        assertEquals("https://www.chess.com/analysis?tab=analysis&pgn=1.%20e4%20e5%20%7Bx%7D", Pgn.analysisUrl("1. e4 e5 {x}"))
+        assertEquals(Syntax.PGN, TypeDetector.syntaxFor("Partida.PGN", null))
+        assertEquals(Syntax.PGN, TypeDetector.syntaxFor("sin-extension", "application/x-chess-pgn"))
+        val line = "[White \"Ana\"]\n1. e4 {bien} 1-0"
+        assertEquals(
+            listOf("White" to Token.KEY, "\"Ana\"" to Token.STRING, "1." to Token.NUMBER, "{bien}" to Token.COMMENT, "1-0" to Token.KEYWORD),
+            Highlighter.highlight(line, Syntax.PGN).map { line.substring(it.start, it.end) to it.token },
+        )
+    }
+}

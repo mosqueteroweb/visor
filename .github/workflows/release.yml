@@ -1,0 +1,84 @@
+name: Compilar y publicar
+
+# Cada cambio en main se compila y pasa los tests.
+# Una etiqueta vX.Y.Z además firma el APK y lo publica como release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          java-version: '17'
+          distribution: temurin
+      - name: Tests y compilación
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
+      - name: Tests y compilación firmada
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$RELEASE_KEYSTORE_BASE64"
+          export KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$KEYSTORE_PATH"' EXIT
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+
+          # La etiqueta tiene que coincidir con version.properties
+          version="$(grep -E '^VERSION_(MAJOR|MINOR|PATCH)=' version.properties | cut -d= -f2 | paste -sd. -)"
+          test "$RELEASE_TAG" = "v$version"
+
+          ./gradlew testDebugUnitTest assembleRelease --no-daemon
+
+          apk="app/build/outputs/apk/release/visor-$version-release.apk"
+          signer="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner | sort -V | tail -n 1)"
+          # Firmado con la clave de distribución, no con la de depuración
+          "$signer" verify --print-certs "$apk" | grep -q 'CN=Visor'
+          mkdir release-assets
+          cp "$apk" "release-assets/visor-$version.apk"
+          (cd release-assets && sha256sum "visor-$version.apk" > "visor-$version.apk.sha256")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: apk-firmado
+          retention-days: 7
+          if-no-files-found: error
+          path: release-assets/
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: apk-firmado
+          path: release-assets
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          name: "Visor ${{ github.ref_name }}"
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          make_latest: true
+          files: release-assets/*

@@ -2,8 +2,10 @@ package com.visor.archivos.viewers
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.LruCache
 import androidx.compose.foundation.Image
@@ -47,7 +49,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -70,6 +74,30 @@ private const val MAX_ZOOM = 4f
 private const val MAX_BITMAP_PIXELS = 16_000_000L
 
 /** PDF abierto. PdfRenderer solo admite una página abierta a la vez, de ahí el cerrojo. */
+/** La búsqueda y la extracción de texto de PDF existen en el sistema desde Android 15. */
+val pdfTextSupported: Boolean get() = Build.VERSION.SDK_INT >= 35
+
+/** Una coincidencia de la búsqueda: página y rectángulos (en puntos de la página) que la cubren. */
+private class PdfHit(val page: Int, val rects: List<RectF>)
+
+/** Texto de todas las páginas, para verlo o copiarlo. Vacío si el PDF es solo imagen. */
+suspend fun extractPdfText(context: Context, uri: Uri): String = withContext(Dispatchers.IO) {
+    val doc = PdfDoc.open(context, uri)
+    try {
+        buildString {
+            for (page in 0 until doc.pageCount) {
+                val text = doc.text(page).trim()
+                if (text.isEmpty()) continue
+                if (isNotEmpty()) append("\n\n")
+                if (doc.pageCount > 1) append("— Página ${page + 1} —\n\n")
+                append(text)
+            }
+        }
+    } finally {
+        doc.close()
+    }
+}
+
 private class PdfDoc(
     private val renderer: PdfRenderer,
     private val descriptor: ParcelFileDescriptor,
@@ -81,6 +109,9 @@ private class PdfDoc(
 
     /** Proporción ancho/alto de cada página; 0 mientras no se conoce. */
     val ratios = FloatArray(pageCount)
+
+    /** Ancho de cada página en puntos, para situar las coincidencias sobre la imagen. */
+    val widths = FloatArray(pageCount)
     val cache = object : LruCache<Int, Bitmap>((Runtime.getRuntime().maxMemory() / 4).coerceAtMost(160L shl 20).toInt()) {
         override fun sizeOf(key: Int, value: Bitmap) = value.byteCount
     }
@@ -91,6 +122,7 @@ private class PdfDoc(
             renderer.openPage(index).use { page ->
                 val ratio = page.width.toFloat() / page.height
                 ratios[index] = ratio
+                widths[index] = page.width.toFloat()
                 var w = widthPx.coerceAtLeast(1)
                 var h = (w / ratio).toInt().coerceAtLeast(1)
                 if (w.toLong() * h > MAX_BITMAP_PIXELS) {
@@ -104,6 +136,23 @@ private class PdfDoc(
                 cache.put(index, bitmap)
                 bitmap
             }
+        }
+    }
+
+    suspend fun search(index: Int, query: String): List<List<RectF>> = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (closed || Build.VERSION.SDK_INT < 35) return@withContext emptyList()
+            renderer.openPage(index).use { page ->
+                widths[index] = page.width.toFloat()
+                page.searchText(query).map { it.bounds }
+            }
+        }
+    }
+
+    suspend fun text(index: Int): String = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (closed || Build.VERSION.SDK_INT < 35) return@withContext ""
+            renderer.openPage(index).use { page -> page.textContents.joinToString("\n") { it.text } }
         }
     }
 
@@ -156,7 +205,7 @@ private sealed interface PdfState {
 }
 
 @Composable
-fun PdfViewer(uri: Uri, contentPadding: PaddingValues, onViewAsHex: () -> Unit, modifier: Modifier = Modifier) {
+fun PdfViewer(uri: Uri, contentPadding: PaddingValues, search: SearchState, onViewAsHex: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val state by produceState<PdfState>(PdfState.Loading, uri) {
         value = withContext(Dispatchers.IO) {
@@ -182,17 +231,37 @@ fun PdfViewer(uri: Uri, contentPadding: PaddingValues, onViewAsHex: () -> Unit, 
         )
         is PdfState.Ready -> {
             DisposableEffect(s.doc) { onDispose { s.doc.close() } }
-            PdfPages(s.doc, contentPadding, modifier)
+            PdfPages(s.doc, contentPadding, search, modifier)
         }
     }
 }
 
 @Composable
-private fun PdfPages(doc: PdfDoc, contentPadding: PaddingValues, modifier: Modifier) {
+private fun PdfPages(doc: PdfDoc, contentPadding: PaddingValues, search: SearchState, modifier: Modifier) {
     val listState = rememberLazyListState()
     val hScroll = rememberScrollState()
     val scope = rememberCoroutineScope()
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
+
+    var hits by remember { mutableStateOf<List<PdfHit>>(emptyList()) }
+    LaunchedEffect(doc, search.query) {
+        hits = emptyList()
+        search.matches = emptyList()
+        search.current = 0
+        val query = search.query.trim()
+        if (query.length < 2) return@LaunchedEffect
+        delay(300) // no buscar en cada pulsación
+        val found = ArrayList<PdfHit>()
+        for (page in 0 until doc.pageCount) {
+            doc.search(page, query).forEach { found += PdfHit(page, it) }
+            // En documentos largos los resultados van apareciendo por tandas
+            if (page % 10 == 9 || page == doc.pageCount - 1) {
+                hits = found.toList()
+                search.matches = found.map { it.page }
+            }
+        }
+    }
+    val hitsByPage = remember(hits) { hits.withIndex().groupBy { it.value.page } }
 
     fun zoomBy(factor: Float, centroid: Offset) {
         val target = (zoom * factor).coerceIn(1f, MAX_ZOOM)
@@ -213,6 +282,14 @@ private fun PdfPages(doc: PdfDoc, contentPadding: PaddingValues, modifier: Modif
         val baseWidth = maxWidth
         val basePx = with(LocalDensity.current) { baseWidth.roundToPx() }
         val fallbackRatio = doc.ratios.firstOrNull()?.takeIf { it > 0f } ?: 0.707f
+
+        LaunchedEffect(search.current, hits.isNotEmpty()) {
+            val hit = hits.getOrNull(search.current) ?: return@LaunchedEffect
+            val scale = doc.widths[hit.page].takeIf { it > 0f }?.let { basePx * zoom / it } ?: 0f
+            val top = hit.rects.minOfOrNull { it.top } ?: 0f
+            // Deja la coincidencia a un tercio de la pantalla, no pegada al borde
+            listState.animateScrollToItem(hit.page, (top * scale).toInt() - constraints.maxHeight / 3)
+        }
 
         LazyColumn(
             state = listState,
@@ -240,7 +317,7 @@ private fun PdfPages(doc: PdfDoc, contentPadding: PaddingValues, modifier: Modif
                 .horizontalScroll(hScroll),
         ) {
             items(doc.pageCount, key = { it }) { index ->
-                PdfPage(doc, index, (basePx * zoom).toInt(), baseWidth * zoom, fallbackRatio)
+                PdfPage(doc, index, (basePx * zoom).toInt(), baseWidth * zoom, fallbackRatio, hitsByPage[index].orEmpty(), search.current)
             }
         }
 
@@ -261,7 +338,15 @@ private fun PdfPages(doc: PdfDoc, contentPadding: PaddingValues, modifier: Modif
 }
 
 @Composable
-private fun PdfPage(doc: PdfDoc, index: Int, widthPx: Int, width: androidx.compose.ui.unit.Dp, fallbackRatio: Float) {
+private fun PdfPage(
+    doc: PdfDoc,
+    index: Int,
+    widthPx: Int,
+    width: androidx.compose.ui.unit.Dp,
+    fallbackRatio: Float,
+    hits: List<IndexedValue<PdfHit>>,
+    currentHit: Int,
+) {
     var bitmap by remember(index) { mutableStateOf(doc.cache.get(index)) }
     var ratio by remember(index) { mutableFloatStateOf(doc.ratios[index].takeIf { it > 0f } ?: fallbackRatio) }
 
@@ -275,7 +360,24 @@ private fun PdfPage(doc: PdfDoc, index: Int, widthPx: Int, width: androidx.compo
         }
     }
 
-    Box(Modifier.width(width).aspectRatio(ratio).background(Color.White)) {
+    Box(
+        Modifier
+            .width(width)
+            .aspectRatio(ratio)
+            .background(Color.White)
+            .drawWithContent {
+                drawContent()
+                val pageWidth = doc.widths[index]
+                if (hits.isEmpty() || pageWidth <= 0f) return@drawWithContent
+                val k = size.width / pageWidth
+                for (hit in hits) {
+                    val color = if (hit.index == currentHit) Color(0x99FF9800) else Color(0x66FFEB3B)
+                    for (r in hit.value.rects) {
+                        drawRect(color, Offset(r.left * k, r.top * k), Size(r.width() * k, r.height() * k))
+                    }
+                }
+            },
+    ) {
         bitmap?.let {
             Image(
                 bitmap = it.asImageBitmap(),
