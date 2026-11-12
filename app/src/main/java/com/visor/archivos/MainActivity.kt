@@ -35,12 +35,18 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -56,6 +62,10 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.visor.archivos.core.FileKind
 import com.visor.archivos.core.Recent
 import com.visor.archivos.core.RecentsStore
+import com.visor.archivos.libros.Library
+import com.visor.archivos.libros.ShelfActions
+import com.visor.archivos.libros.ShelfAddButton
+import com.visor.archivos.libros.ShelfContent
 import com.visor.archivos.ui.VisorTheme
 import com.visor.archivos.ui.sizeLabel
 import com.visor.archivos.viewers.CenteredMessage
@@ -64,6 +74,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        Library.init(this)
         setContent { VisorTheme { HomeScreen() } }
     }
 }
@@ -83,6 +94,10 @@ private fun HomeScreen() {
     val context = LocalContext.current
     val store = remember { RecentsStore(context) }
     var recents by remember { mutableStateOf(store.list()) }
+    val prefs = remember { context.getSharedPreferences("inicio", Context.MODE_PRIVATE) }
+    var tab by remember { mutableIntStateOf(prefs.getInt("pestaña", 0)) }
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) { Library.messages.collect { snackbar.showSnackbar(it) } }
     // Al volver del visor la lista puede haber cambiado
     LifecycleResumeEffect(Unit) {
         recents = store.list()
@@ -93,29 +108,48 @@ private fun HomeScreen() {
         if (uri != null) openViewer(context, uri, null)
     }
 
+    fun selectTab(index: Int) {
+        tab = index
+        prefs.edit().putInt("pestaña", index).apply()
+    }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Visor") },
-                actions = {
-                    if (recents.isNotEmpty()) {
-                        TextButton(onClick = { store.clear(); recents = emptyList() }) { Text("Vaciar") }
-                    }
-                },
-            )
+            Column {
+                TopAppBar(
+                    title = { Text("Visor") },
+                    actions = {
+                        if (tab == 0 && recents.isNotEmpty()) {
+                            TextButton(onClick = { store.clear(); recents = emptyList() }) { Text("Vaciar") }
+                        }
+                        if (tab == 1) ShelfActions()
+                    },
+                )
+                PrimaryTabRow(selectedTabIndex = tab) {
+                    Tab(selected = tab == 0, onClick = { selectTab(0) }, text = { Text("Archivos") })
+                    Tab(selected = tab == 1, onClick = { selectTab(1) }, text = { Text("Libros") })
+                }
+            }
         },
+        snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { picker.launch(arrayOf("*/*")) },
-                icon = { Icon(Icons.Filled.Add, null) },
-                text = { Text("Abrir archivo") },
-            )
+            if (tab == 0) {
+                ExtendedFloatingActionButton(
+                    onClick = { picker.launch(arrayOf("*/*")) },
+                    icon = { Icon(Icons.Filled.Add, null) },
+                    text = { Text("Abrir archivo") },
+                )
+            } else {
+                ShelfAddButton()
+            }
         },
     ) { padding ->
-        if (recents.isEmpty()) {
+        if (tab == 1) {
+            ShelfContent(padding)
+        } else if (recents.isEmpty()) {
             CenteredMessage(
                 title = "Todavía no has abierto nada",
-                detail = "Pulsa «Abrir archivo», o elige Visor en «Abrir con» o «Compartir» desde otra app.\n\nTexto y código, Markdown, imágenes y PDF.",
+                detail = "Pulsa «Abrir archivo», o elige Visor en «Abrir con» o «Compartir» desde otra app.\n\nTexto y código, Markdown, tablas, imágenes y PDF.",
                 modifier = Modifier.padding(padding),
             )
         } else {
@@ -156,6 +190,7 @@ private fun RecentRow(recent: Recent, onOpen: () -> Unit, onRemove: () -> Unit) 
         FileKind.IMAGE -> "IMG" to MaterialTheme.colorScheme.tertiaryContainer
         FileKind.MARKDOWN -> "MD" to MaterialTheme.colorScheme.secondaryContainer
         FileKind.TEXT -> "TXT" to MaterialTheme.colorScheme.primaryContainer
+        FileKind.EPUB -> "EPUB" to MaterialTheme.colorScheme.secondaryContainer
         FileKind.BINARY -> "BIN" to MaterialTheme.colorScheme.surfaceContainerHighest
     }
     val whenOpened = DateUtils.getRelativeTimeSpanString(recent.openedAt, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString()

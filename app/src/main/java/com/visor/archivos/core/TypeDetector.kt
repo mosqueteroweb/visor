@@ -1,7 +1,7 @@
 package com.visor.archivos.core
 
 /** Cómo se va a mostrar un archivo. */
-enum class FileKind { TEXT, MARKDOWN, IMAGE, PDF, BINARY }
+enum class FileKind { TEXT, MARKDOWN, IMAGE, PDF, EPUB, BINARY }
 
 /** Familias de sintaxis que sabe colorear [Highlighter]. */
 enum class Syntax { NONE, C_LIKE, HASH, KEY_VALUE, JSON, MARKUP, SQL, PGN }
@@ -20,6 +20,12 @@ object TypeDetector {
         val m = mime?.lowercase().orEmpty()
 
         if (startsWith(head, "%PDF-")) return FileKind.PDF
+        // Un ePub es un ZIP cuya primera entrada declara su tipo
+        if (bytesAt(head, 0, 0x50, 0x4B, 0x03, 0x04) &&
+            (asciiAt(head, 30, 28) == "mimetypeapplication/epub+zip" || ext == "epub" || m == "application/epub+zip")
+        ) {
+            return FileKind.EPUB
+        }
         if (isRasterImage(head)) return FileKind.IMAGE
         if (startsWith(head, "BM") && (ext == "bmp" || m == "image/bmp" || m == "image/x-ms-bmp")) return FileKind.IMAGE
 

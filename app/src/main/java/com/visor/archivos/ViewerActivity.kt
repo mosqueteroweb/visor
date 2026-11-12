@@ -89,6 +89,8 @@ import com.visor.archivos.core.RecentsStore
 import com.visor.archivos.core.TextDecoder
 import com.visor.archivos.core.TextDoc
 import com.visor.archivos.core.TypeDetector
+import com.visor.archivos.libros.Library
+import com.visor.archivos.libros.ReaderActivity
 import com.visor.archivos.ui.VisorTheme
 import com.visor.archivos.ui.kindLabel
 import com.visor.archivos.ui.sizeLabel
@@ -115,6 +117,7 @@ class ViewerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        Library.init(this)
         val uri = resolveUri(intent)
         val mime = intent.type
         setContent {
@@ -173,7 +176,8 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
     val info by produceState<Load<DocInfo>>(Load.Loading, uri) {
         value = try {
             val doc = Docs.inspect(context, uri, hintMime)
-            withContext(Dispatchers.IO) { RecentsStore(context).remember(doc) }
+            // Los libros van a la estantería, no a recientes
+            if (doc.kind != FileKind.EPUB) withContext(Dispatchers.IO) { RecentsStore(context).remember(doc) }
             Load.Ready(doc)
         } catch (e: Exception) {
             Load.Failed(errorMessage(e))
@@ -197,12 +201,16 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
     val listState = rememberLazyListState()
 
     val doc = (info as? Load.Ready)?.value
+    if (doc?.kind == FileKind.EPUB) {
+        EpubHandoff(doc, onBack)
+        return
+    }
     val natural = when (doc?.kind) {
         FileKind.TEXT -> if (Csv.isCsv(doc.name, doc.mime)) ViewMode.TABLE else ViewMode.TEXT
         FileKind.MARKDOWN -> ViewMode.MARKDOWN
         FileKind.IMAGE -> ViewMode.IMAGE
         FileKind.PDF -> ViewMode.PDF
-        FileKind.BINARY -> ViewMode.HEX
+        FileKind.BINARY, FileKind.EPUB -> ViewMode.HEX
         null -> null
     }
     val mode = forced ?: natural
@@ -432,6 +440,38 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
 
     if (showInfo && doc != null) {
         ModalBottomSheet(onDismissRequest = { showInfo = false }) { InfoSheet(doc) }
+    }
+}
+
+/** Un ePub se añade a la estantería y se abre en el lector. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EpubHandoff(doc: DocInfo, onDone: () -> Unit) {
+    val context = LocalContext.current
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(doc.uri) {
+        try {
+            val result = Library.addDocument(doc.uri, doc.name)
+            ReaderActivity.start(context, result.book.id)
+            onDone()
+        } catch (e: Exception) {
+            error = Library.describe(e)
+        }
+    }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(doc.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = { IconButton(onClick = onDone) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") } },
+            )
+        },
+    ) { padding ->
+        val message = error
+        if (message == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        } else {
+            CenteredMessage("No se puede abrir el libro", message, Modifier.padding(padding))
+        }
     }
 }
 

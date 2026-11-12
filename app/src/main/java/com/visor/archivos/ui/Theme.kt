@@ -42,6 +42,7 @@ fun kindLabel(kind: FileKind, name: String): String {
     val ext = name.substringAfterLast('.', "").uppercase().takeIf { it.length in 1..5 }
     return when (kind) {
         FileKind.PDF -> "PDF"
+        FileKind.EPUB -> "Libro ePub"
         FileKind.MARKDOWN -> "Markdown"
         FileKind.IMAGE -> ext?.let { "Imagen $it" } ?: "Imagen"
         FileKind.TEXT -> ext?.let { "Texto $it" } ?: "Texto"

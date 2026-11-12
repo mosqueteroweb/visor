@@ -13,11 +13,20 @@ Aparece en «Abrir con» y en «Compartir» de cualquier app, y no pide ningún 
 | CSV y TSV | Como tabla con cabecera fija, búsqueda por filas e ir a una fila. Detecta el separador |
 | Markdown | Con formato o en código fuente |
 | Partidas PGN | Como texto resaltado, con botones para analizarlas en chess.com o en Lichess (si hay varias, se elige cuál) |
+| Libros ePub | Lector por capítulos con índice, tamaño de letra, temas claro, sepia y oscuro, pantalla completa y recuerdo del punto de lectura. Sin DRM |
 | Imágenes | JPG, PNG, WebP, GIF, HEIC, AVIF, BMP y SVG, con zoom |
 | PDF | Páginas continuas, zoom con dos dedos o doble toque, búsqueda de texto y vista solo texto |
 | Cualquier otro | Volcado hexadecimal |
 
 El tipo se decide por el contenido del archivo, no por su extensión. Desde el menú se puede forzar la vista de texto o la hexadecimal.
+
+## Estantería
+
+La pestaña «Libros» guarda los ePub abiertos y los de las carpetas que se añadan (se analizan también las subcarpetas). Muestra portada y progreso, y permite quitar libros o carpetas sin borrar los archivos. «Volver a analizar carpetas» recoge los libros nuevos y quita los que ya no están.
+
+Los ePub que llegan desde otra app sin permiso duradero se copian dentro de Visor para que sigan en la estantería; al quitarlos, se borra esa copia.
+
+## Otras funciones
 
 Todos los archivos se pueden compartir con otra app desde la barra superior. El texto se selecciona con una pulsación larga, y «Copiar todo el texto» está en el menú, igual que «Imprimir» (impresora o guardar como PDF).
 

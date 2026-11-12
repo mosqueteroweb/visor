@@ -41,8 +41,15 @@
                 <data android:mimeType="application/octet-stream" />
                 <data android:mimeType="application/x-chess-pgn" />
                 <data android:mimeType="application/vnd.chess-pgn" />
+                <data android:mimeType="application/epub+zip" />
             </intent-filter>
         </activity>
+
+        <!-- Lector de ePub: no se recrea al plegar o girar, para no perder el punto de lectura -->
+        <activity
+            android:name=".libros.ReaderActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density"
+            android:exported="false" />
 
         <!-- Solo para reenviar a otras apps el texto recibido por «Compartir» -->
         <provider

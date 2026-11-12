@@ -2,6 +2,9 @@ package com.visor.archivos.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import org.junit.Test
 
 class CoreTest {
@@ -125,5 +128,118 @@ class DataTest {
         assertTrue(JsonFormat.looksMinified("{" + "\"k\":1,".repeat(100) + "}"))
         assertTrue(!JsonFormat.looksMinified("{\n  \"a\": 1\n}"))
         assertEquals("https://lichess.org/analysis/pgn/1.%20e4%20e5", Pgn.lichessUrl("1. e4 e5"))
+    }
+}
+
+class EpubTest {
+    private val container = """<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"""
+
+    private val opf3 = """<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>El Quijote &amp; más</dc:title><dc:creator id="a">Miguel de Cervantes</dc:creator><!-- <dc:title>Falso</dc:title> --></metadata>
+<manifest>
+<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="c1" href="Text/cap%201.xhtml" media-type="application/xhtml+xml"/>
+<item id="c2" href="Text/cap2.xhtml" media-type="application/xhtml+xml"/>
+<item id="img" href="Images/portada.jpg" media-type="image/jpeg" properties="cover-image"/>
+</manifest>
+<spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>"""
+
+    private val nav = """<html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="landmarks"><ol><li><a href="Text/cap2.xhtml">Marca</a></li></ol></nav>
+<nav epub:type="toc"><h1>Índice</h1><ol>
+<li><a href="Text/cap%201.xhtml">Primera <b>parte</b></a><ol><li><a href="Text/cap%201.xhtml#s2">Sección&nbsp;2</a></li></ol></li>
+<li><a href="Text/cap2.xhtml">Segunda</a></li></ol></nav></body></html>"""
+
+    private fun write(entries: List<Pair<String, String>>): File {
+        val file = File.createTempFile("prueba", ".epub")
+        file.deleteOnExit()
+        ZipOutputStream(file.outputStream()).use { zip ->
+            for ((name, content) in entries) {
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(content.toByteArray())
+                zip.closeEntry()
+            }
+        }
+        return file
+    }
+
+    private fun epub3(extra: List<Pair<String, String>> = emptyList()) = write(
+        listOf(
+            "mimetype" to "application/epub+zip",
+            "META-INF/container.xml" to container,
+        ) + extra + listOf(
+            "OEBPS/content.opf" to opf3,
+            "OEBPS/nav.xhtml" to nav,
+            "OEBPS/Text/cap 1.xhtml" to "<html><body><p>Uno</p></body></html>",
+            "OEBPS/Text/cap2.xhtml" to "<html><body><p>Dos</p></body></html>",
+            "OEBPS/Images/portada.jpg" to "JPEG",
+        ),
+    )
+
+    @Test fun `paquete e indice epub 3`() {
+        EpubFile.open(epub3()).use { book ->
+            assertEquals("El Quijote & más", book.pkg.title)
+            assertEquals("Miguel de Cervantes", book.pkg.author)
+            assertEquals(listOf("OEBPS/Text/cap 1.xhtml", "OEBPS/Text/cap2.xhtml"), book.pkg.spine)
+            assertEquals("OEBPS/Images/portada.jpg", book.pkg.coverPath)
+            assertEquals(
+                listOf(
+                    TocEntry("Primera parte", "OEBPS/Text/cap 1.xhtml", 0),
+                    TocEntry("Sección 2", "OEBPS/Text/cap 1.xhtml#s2", 1),
+                    TocEntry("Segunda", "OEBPS/Text/cap2.xhtml", 0),
+                ),
+                book.toc,
+            )
+            assertEquals("Uno", Regex("<p>(.*)</p>").find(book.text("OEBPS/Text/cap 1.xhtml")!!)!!.groupValues[1])
+            assertTrue(!book.drm)
+        }
+    }
+
+    @Test fun `lectura en flujo para la estanteria`() {
+        val file = epub3()
+        val meta = EpubScanner.read { file.inputStream() }
+        assertEquals("El Quijote & más", meta.pkg.title)
+        assertEquals("JPEG", String(meta.cover!!))
+        assertTrue(!meta.drm)
+    }
+
+    @Test fun `indice ncx de epub 2 y portada por meta`() {
+        val opf2 = """<package version="2.0"><metadata><dc:title>Libro</dc:title><meta name="cover" content="cov"/></metadata>
+<manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="a" href="a.html" media-type="application/xhtml+xml"/>
+<item id="cov" href="img/c.png" media-type="image/png"/></manifest><spine toc="ncx"><itemref idref="a"/></spine></package>"""
+        val ncx = """<ncx><docTitle><text>Libro</text></docTitle><navMap>
+<navPoint id="n1"><navLabel><text>Uno</text></navLabel><content src="a.html"/>
+<navPoint id="n2"><navLabel><text>Uno.1</text></navLabel><content src="a.html#x"/></navPoint></navPoint>
+</navMap><pageList><pageTarget><navLabel><text>1</text></navLabel><content src="a.html#p1"/></pageTarget></pageList></ncx>"""
+        val file = write(listOf("META-INF/container.xml" to container, "OEBPS/content.opf" to opf2, "OEBPS/toc.ncx" to ncx, "OEBPS/a.html" to "<p>a</p>"))
+        EpubFile.open(file).use { book ->
+            assertEquals("Libro", book.pkg.title)
+            assertEquals(null, book.pkg.author)
+            assertEquals("OEBPS/img/c.png", book.pkg.coverPath)
+            assertEquals(listOf(TocEntry("Uno", "OEBPS/a.html", 0), TocEntry("Uno.1", "OEBPS/a.html#x", 1)), book.toc)
+        }
+    }
+
+    @Test fun `rutas relativas`() {
+        assertEquals("OEBPS/Images/x y.png#f", Epub.resolve("OEBPS/Text/a.xhtml", "../Images/x%20y.png#f"))
+        assertEquals("OEBPS/a.xhtml#n", Epub.resolve("OEBPS/a.xhtml", "#n"))
+        assertEquals("b.html", Epub.resolve("a.html", "./b.html"))
+        assertEquals("https://example.com/x", Epub.resolve("OEBPS/a.xhtml", "https://example.com/x"))
+    }
+
+    @Test fun `drm`() {
+        val font = """<encryption><EncryptedData><CipherData><CipherReference URI="OEBPS/fonts/a.otf"/></CipherData></EncryptedData></encryption>"""
+        val text = """<encryption><EncryptedData><CipherData><CipherReference URI="OEBPS/Text/cap1.xhtml"/></CipherData></EncryptedData></encryption>"""
+        assertTrue(!Epub.isDrm(font, false))
+        assertTrue(Epub.isDrm(text, false))
+        assertTrue(Epub.isDrm(null, true))
+        assertTrue(EpubFile.open(epub3(listOf("META-INF/encryption.xml" to text))).use { it.drm })
+    }
+
+    @Test fun `deteccion de epub`() {
+        val head = "PK\u0003\u0004".toByteArray(Charsets.ISO_8859_1) + ByteArray(26) + "mimetypeapplication/epub+zip".toByteArray()
+        assertEquals(FileKind.EPUB, TypeDetector.detect(head, "libro.bin", null))
+        assertEquals(FileKind.BINARY, TypeDetector.detect("PK\u0003\u0004\u0000\u0000".toByteArray(Charsets.ISO_8859_1), "a.zip", null))
     }
 }
