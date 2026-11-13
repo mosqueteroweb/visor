@@ -30,7 +30,9 @@ Los ePub que llegan desde otra app sin permiso duradero se copian dentro de Viso
 
 Por defecto se lee por páginas: un toque en el lateral derecho avanza, en el izquierdo retrocede y en el centro muestra las barras; también se puede deslizar. En pantallas anchas se ven dos páginas, y se puede forzar una o dos. En «Aa» se cambia a vertical continuo, el tamaño y el tipo de letra (incluida Atkinson Hyperlegible, pensada para baja visión) y el tema.
 
-El código que traiga un libro no se ejecuta, y el lector no hace ninguna petición a internet.
+También se pasa página con los botones de volumen, el teclado o los botones de la barra inferior, y arrastrando la barra de progreso se salta a cualquier punto del libro.
+
+El código que traiga un libro no se ejecuta, la app no tiene permiso de internet, y un libro no puede abrir enlaces por su cuenta: los externos piden confirmación al tocarlos.
 
 ## Otras funciones
 
@@ -42,6 +44,7 @@ Límites:
 - La búsqueda y la extracción de texto en PDF necesitan Android 15 o posterior. Los PDF escaneados no tienen texto que buscar.
 - Los PDF con contraseña no se abren.
 - El portapapeles admite hasta unos 400 000 caracteres.
+- La selección con el dedo no pasa de lo que cabe en pantalla; para tramos largos está «Copiar líneas…».
 
 ## Instalar
 
@@ -56,6 +59,8 @@ Hace falta JDK 17 y el SDK de Android (`local.properties` con `sdk.dir`).
 ```
 
 El APK queda en `app/build/outputs/apk/release/`. Sin clave de distribución se firma con la de depuración, que solo sirve para pruebas.
+
+La compilación verifica la suma de cada dependencia (`gradle/verification-metadata.xml`). Al cambiar una versión hay que regenerarla con una caché vacía (`GRADLE_USER_HOME` temporal y `--write-verification-metadata sha256`) y añadir a mano la variante `-linux` de `aapt2`, que es la que usa GitHub.
 
 ## Publicar
 
