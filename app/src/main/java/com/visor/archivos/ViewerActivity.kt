@@ -12,6 +12,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -45,7 +47,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,6 +73,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -91,6 +96,7 @@ import com.visor.archivos.core.TextDoc
 import com.visor.archivos.core.TypeDetector
 import com.visor.archivos.libros.Library
 import com.visor.archivos.libros.ReaderActivity
+import com.visor.archivos.ui.ScaledContent
 import com.visor.archivos.ui.VisorTheme
 import com.visor.archivos.ui.kindLabel
 import com.visor.archivos.ui.sizeLabel
@@ -137,11 +143,30 @@ class ViewerActivity : ComponentActivity() {
         }
     }
 
+    private var sharedText: File? = null
+
     private fun resolveUri(intent: Intent): Uri? = when (intent.action) {
         Intent.ACTION_SEND ->
-            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.takeIf(::isForeign)
                 ?: intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.let(::sharedTextFile)
-        else -> intent.data
+        else -> intent.data?.takeIf(::isForeign)
+    }
+
+    /** Otra app no puede pedir a Visor que le enseñe sus propios archivos internos. */
+    private fun isForeign(uri: Uri): Boolean = when (uri.scheme) {
+        "content" -> uri.authority != "$packageName.archivos"
+        "file" -> {
+            val path = runCatching { File(uri.path.orEmpty()).canonicalPath }.getOrNull()
+            val own = listOfNotNull(dataDir, cacheDir, filesDir, externalCacheDir).map { it.canonicalPath }
+            path != null && own.none { path == it || path.startsWith("$it/") }
+        }
+        else -> false
+    }
+
+    override fun onDestroy() {
+        // El texto recibido por «Compartir» no se queda guardado al cerrar
+        if (isFinishing) sharedText?.delete()
+        super.onDestroy()
     }
 
     /** El texto compartido sin archivo se guarda en la caché para tratarlo como cualquier otro. */
@@ -149,6 +174,7 @@ class ViewerActivity : ComponentActivity() {
         val dir = File(cacheDir, "compartido").apply { mkdirs() }
         val file = File(dir, "Texto compartido.txt")
         file.writeText(text)
+        sharedText = file
         // A través del proveedor propio, para poder reenviarlo después a otras apps
         return FileProvider.getUriForFile(this, "$packageName.archivos", file)
     }
@@ -195,6 +221,11 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
     var formatJson by rememberSaveable { mutableStateOf<Boolean?>(null) }
     var jsonFormatted by remember { mutableStateOf(false) }
     var showGoTo by remember { mutableStateOf(false) }
+    var showCopyLines by remember { mutableStateOf(false) }
+    var showTextSize by remember { mutableStateOf(false) }
+    val viewerPrefs = remember { context.getSharedPreferences("visor", Context.MODE_PRIVATE) }
+    // 115 %: un punto más grande que el tamaño estándar, cómodo con presbicia leve
+    var textScale by remember { mutableStateOf(viewerPrefs.getInt("escalaTexto", 115)) }
     var pgnChoices by remember { mutableStateOf<Pair<ChessSite, List<PgnGame>>?>(null) }
     val search = remember { SearchState() }
     val scope = rememberCoroutineScope()
@@ -258,7 +289,7 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
     Scaffold(
         topBar = {
             if (search.open) {
-                SearchBar(search)
+                SearchBar(search, hint = "mín. 2 letras".takeIf { mode == ViewMode.PDF && search.query.trim().length == 1 })
             } else {
                 TopAppBar(
                     navigationIcon = {
@@ -269,7 +300,12 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                             Text(doc?.name ?: "Abriendo…", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
                             if (doc != null) {
                                 Text(
-                                    listOfNotNull(kindLabel(doc.kind, doc.name), sizeLabel(doc.size)).joinToString(" · "),
+                                    listOfNotNull(
+                                        kindLabel(doc.kind, doc.name),
+                                        sizeLabel(doc.size),
+                                        // Avisa de que las líneas ya no son las del archivo original
+                                        "formateado".takeIf { isJson && jsonFormatted },
+                                    ).joinToString(" · "),
                                     maxLines = 1,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -292,7 +328,9 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                                 }
                                 if (showsRows) entry(if (wrap) "No ajustar líneas" else "Ajustar líneas") { wrap = !wrap }
                                 if (isJson) entry(if (jsonFormatted) "Ver JSON original" else "Formatear JSON") { formatJson = !jsonFormatted }
+                                if (mode != ViewMode.IMAGE && mode != ViewMode.PDF) entry("Tamaño de letra…") { showTextSize = true }
                                 if (showsRows) entry("Ir a la línea…") { showGoTo = true }
+                                if (showsRows) entry("Copiar líneas…") { showCopyLines = true }
                                 if (mode == ViewMode.TABLE) entry("Ir a la fila…") { showGoTo = true }
                                 if (hasText) entry("Copiar todo el texto") { copyAll() }
                                 if (hasText) HorizontalDivider()
@@ -334,6 +372,7 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
         // Con el botón de chess.com, hueco extra para que no tape las últimas líneas
         val bottom = PaddingValues(bottom = padding.calculateBottomPadding() + if (isPgn) 168.dp else 8.dp)
 
+        ScaledContent(textScale / 100f) {
         when (val state = info) {
             Load.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             is Load.Failed -> CenteredMessage("No se puede abrir", state.message, Modifier.padding(padding))
@@ -351,7 +390,9 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                     when (val b = bytes) {
                         Load.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                         is Load.Failed -> CenteredMessage("No se puede abrir", b.message, Modifier.padding(padding))
-                        is Load.Ready -> HexViewer(b.value.first, b.value.second, bottom, topOnly)
+                        is Load.Ready -> WithNotice(HEX_CUT_NOTICE.takeIf { b.value.second }, topOnly) {
+                            HexViewer(b.value.first, b.value.second, bottom, Modifier.weight(1f))
+                        }
                     }
                 }
                 ViewMode.TEXT, ViewMode.MARKDOWN, ViewMode.TABLE, null -> {
@@ -385,14 +426,61 @@ private fun ViewerScreen(uri: Uri, hintMime: String?, onBack: () -> Unit) {
                         is Load.Ready -> when {
                             t.value.text.isEmpty() && pdfAsText -> CenteredMessage("PDF sin texto", "Sus páginas son imágenes, así que no hay texto que extraer.", Modifier.padding(padding))
                             t.value.text.isEmpty() -> CenteredMessage("Archivo vacío", "No contiene texto.", Modifier.padding(padding))
-                            mode == ViewMode.TABLE -> TableViewer(t.value.text, search, listState, bottom, topOnly)
-                            showsRows -> TextViewer(t.value, wrap, search, listState, bottom, topOnly)
-                            else -> MarkdownView(t.value.text, bottom, topOnly)
+                            else -> WithNotice(TEXT_CUT_NOTICE.takeIf { t.value.truncated }, topOnly) {
+                                val fill = Modifier.weight(1f)
+                                when {
+                                    mode == ViewMode.TABLE -> TableViewer(t.value.text, search, listState, bottom, fill)
+                                    showsRows -> TextViewer(t.value, wrap, search, listState, bottom, fill)
+                                    else -> MarkdownView(t.value.text, bottom, fill)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        }
+    }
+
+    if (showTextSize) {
+        AlertDialog(
+            onDismissRequest = { showTextSize = false },
+            title = { Text("Tamaño de letra") },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    fun set(value: Int) {
+                        textScale = value
+                        viewerPrefs.edit().putInt("escalaTexto", value).apply()
+                    }
+                    OutlinedButton(onClick = { set(textScale - 10) }, enabled = textScale > 70) { Text("A−") }
+                    Text("$textScale %", textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+                    OutlinedButton(onClick = { set(textScale + 10) }, enabled = textScale < 250) { Text("A+") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showTextSize = false }) { Text("Cerrar") } },
+        )
+    }
+
+    val textDoc = loadedDoc
+    if (showCopyLines && textDoc != null) {
+        // Propone las líneas que hay ahora en pantalla
+        fun lineAt(index: Int) = (index.coerceIn(0, textDoc.rows.lastIndex) downTo 0).firstNotNullOfOrNull { textDoc.rows[it].number } ?: 1
+        val visible = listState.layoutInfo.visibleItemsInfo
+        CopyLinesDialog(
+            first = lineAt(visible.firstOrNull()?.index ?: 0),
+            last = lineAt(visible.lastOrNull()?.index ?: 0),
+            max = textDoc.lineCount,
+            onDismiss = { showCopyLines = false },
+            onCopy = { from, to ->
+                showCopyLines = false
+                val rows = textDoc.rows
+                val firstRow = rows.indexOfFirst { it.number == from }
+                // La línea final puede ocupar varias filas si es muy larga
+                var lastRow = rows.indexOfFirst { it.number == to }
+                while (lastRow in 0 until rows.lastIndex && rows[lastRow + 1].number == null) lastRow++
+                if (firstRow >= 0 && lastRow >= firstRow) copyText(context, textDoc.text.substring(rows[firstRow].start, rows[lastRow].end))
+            },
+        )
     }
 
     if (showGoTo) {
@@ -475,6 +563,53 @@ private fun EpubHandoff(doc: DocInfo, onDone: () -> Unit) {
     }
 }
 
+private const val TEXT_CUT_NOTICE = "Archivo grande: solo se muestran los primeros 4 MB."
+private const val HEX_CUT_NOTICE = "Archivo grande: solo se muestran los primeros 8 MB."
+
+/** Contenido con un aviso fijo encima, a la vista desde el primer momento. */
+@Composable
+private fun WithNotice(notice: String?, modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(modifier.fillMaxSize()) {
+        if (notice != null) {
+            Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
+                Text(notice, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            }
+        }
+        content()
+    }
+}
+
+/** Copiar un tramo por números de línea: la selección con el dedo no pasa de lo que cabe en pantalla. */
+@Composable
+private fun CopyLinesDialog(first: Int, last: Int, max: Int, onDismiss: () -> Unit, onCopy: (Int, Int) -> Unit) {
+    var from by remember { mutableStateOf(first.toString()) }
+    var to by remember { mutableStateOf(last.toString()) }
+    val a = from.toIntOrNull()?.takeIf { it in 1..max }
+    val b = to.toIntOrNull()?.takeIf { it in 1..max }
+    val valid = a != null && b != null && a <= b
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Copiar líneas (1–$max)") },
+        text = {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                @Composable
+                fun field(label: String, value: String, onChange: (String) -> Unit) = OutlinedTextField(
+                    value = value,
+                    onValueChange = { new -> onChange(new.filter(Char::isDigit).take(9)) },
+                    label = { Text(label) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+                field("Desde", from) { from = it }
+                field("Hasta", to) { to = it }
+            }
+        },
+        confirmButton = { TextButton(onClick = { if (valid) onCopy(a!!, b!!) }, enabled = valid) { Text("Copiar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
 @Composable
 private fun GoToDialog(label: String, max: Int?, onDismiss: () -> Unit, onGo: (Int) -> Unit) {
     var value by remember { mutableStateOf("") }
@@ -523,7 +658,7 @@ private fun MarkdownView(text: String, contentPadding: PaddingValues, modifier: 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SearchBar(search: SearchState) {
+private fun SearchBar(search: SearchState, hint: String? = null) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
     TopAppBar(
@@ -549,7 +684,7 @@ private fun SearchBar(search: SearchState) {
         actions = {
             if (search.query.isNotEmpty()) {
                 Text(
-                    if (search.matches.isEmpty()) "0" else "${search.current + 1}/${search.matches.size}",
+                    hint ?: if (search.matches.isEmpty()) "0" else "${search.current + 1}/${search.matches.size}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

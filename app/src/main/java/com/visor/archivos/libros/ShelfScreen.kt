@@ -1,5 +1,6 @@
 package com.visor.archivos.libros
 
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -22,6 +24,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -34,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +49,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -52,17 +61,57 @@ import com.visor.archivos.viewers.CenteredMessage
 import java.io.File
 import kotlin.math.roundToInt
 
-/** Estantería: los libros abiertos y los de las carpetas añadidas, primero los últimos leídos. */
+enum class ShelfSort(val label: String) { RECENT("Últimos leídos"), TITLE("Título"), AUTHOR("Autor") }
+
+/** Búsqueda y orden de la estantería, compartidos entre la barra superior y la lista. */
+@Stable
+class ShelfUi(context: Context) {
+    private val prefs = context.getSharedPreferences("inicio", Context.MODE_PRIVATE)
+    var searching by mutableStateOf(false)
+    var query by mutableStateOf("")
+    var sort by mutableStateOf(ShelfSort.entries.firstOrNull { it.name == prefs.getString("ordenLibros", null) } ?: ShelfSort.RECENT)
+        private set
+
+    fun sortBy(value: ShelfSort) {
+        sort = value
+        prefs.edit().putString("ordenLibros", value.name).apply()
+    }
+
+    fun closeSearch() {
+        searching = false
+        query = ""
+    }
+}
+
+/** Estantería: los libros abiertos y los de las carpetas añadidas. [onRemoved] permite ofrecer «Deshacer». */
 @Composable
-fun ShelfContent(padding: PaddingValues) {
+fun ShelfContent(padding: PaddingValues, ui: ShelfUi, onRemoved: (Book) -> Unit) {
     val context = LocalContext.current
     val books by Library.books.collectAsState()
     val scan by Library.scan.collectAsState()
-    val sorted = remember(books) {
-        books.sortedWith(compareByDescending<Book> { it.openedAt }.thenByDescending { it.addedAt })
+    val sorted = remember(books, ui.sort, ui.query) {
+        val query = ui.query.trim()
+        val shown = if (query.isEmpty()) books else books.filter { it.title.contains(query, true) || it.author?.contains(query, true) == true }
+        when (ui.sort) {
+            ShelfSort.RECENT -> shown.sortedWith(compareByDescending<Book> { it.openedAt }.thenByDescending { it.addedAt })
+            ShelfSort.TITLE -> shown.sortedBy { it.title.lowercase() }
+            ShelfSort.AUTHOR -> shown.sortedWith(compareBy<Book> { it.author == null }.thenBy { it.author?.lowercase() }.thenBy { it.title.lowercase() })
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(padding)) {
+        if (ui.searching) {
+            val focus = remember { FocusRequester() }
+            LaunchedEffect(Unit) { focus.requestFocus() }
+            OutlinedTextField(
+                value = ui.query,
+                onValueChange = { ui.query = it },
+                placeholder = { Text("Título o autor") },
+                singleLine = true,
+                trailingIcon = { IconButton(onClick = ui::closeSearch) { Icon(Icons.Filled.Close, "Cerrar búsqueda") } },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).focusRequester(focus),
+            )
+        }
         scan?.let { s ->
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Text(
@@ -77,7 +126,9 @@ fun ShelfContent(padding: PaddingValues) {
                 }
             }
         }
-        if (sorted.isEmpty()) {
+        if (sorted.isEmpty() && books.isNotEmpty()) {
+            CenteredMessage("Ningún libro coincide", "Prueba con otra parte del título o del autor.")
+        } else if (sorted.isEmpty()) {
             if (scan == null) {
                 CenteredMessage(
                     title = "La estantería está vacía",
@@ -97,7 +148,7 @@ fun ShelfContent(padding: PaddingValues) {
                     BookCard(
                         book,
                         onOpen = { ReaderActivity.start(context, book.id) },
-                        onRemove = { Library.remove(book.id) },
+                        onRemove = { Library.remove(book.id)?.let(onRemoved) },
                     )
                 }
             }
@@ -125,7 +176,8 @@ fun ShelfAddButton() {
                 text = { Text("Añadir libro") },
                 onClick = {
                     menu = false
-                    bookPicker.launch(arrayOf("application/epub+zip"))
+                    // Algunos gestores de archivos no marcan los ePub con su tipo y saldrían en gris
+                    bookPicker.launch(arrayOf("application/epub+zip", "application/octet-stream", "application/zip"))
                 },
             )
             DropdownMenuItem(
@@ -141,22 +193,34 @@ fun ShelfAddButton() {
 
 /** Acciones de la barra superior en la pestaña de libros. */
 @Composable
-fun ShelfActions() {
+fun ShelfActions(ui: ShelfUi) {
     val folders by Library.folders.collectAsState()
+    val books by Library.books.collectAsState()
     var menu by remember { mutableStateOf(false) }
     var showFolders by remember { mutableStateOf(false) }
-    if (folders.isEmpty()) return
+    if (books.isEmpty() && folders.isEmpty()) return
 
+    IconButton(onClick = { ui.searching = true }) { Icon(Icons.Filled.Search, "Buscar libros") }
     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "Más opciones") }
     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-        DropdownMenuItem(
+        ShelfSort.entries.forEach { option ->
+            DropdownMenuItem(
+                text = { Text((if (ui.sort == option) "✓ " else "     ") + "Ordenar por " + option.label.lowercase()) },
+                onClick = {
+                    menu = false
+                    ui.sortBy(option)
+                },
+            )
+        }
+        if (folders.isNotEmpty()) HorizontalDivider()
+        if (folders.isNotEmpty()) DropdownMenuItem(
             text = { Text("Volver a analizar carpetas") },
             onClick = {
                 menu = false
                 Library.rescanAll()
             },
         )
-        DropdownMenuItem(
+        if (folders.isNotEmpty()) DropdownMenuItem(
             text = { Text("Carpetas…") },
             onClick = {
                 menu = false
@@ -235,6 +299,14 @@ private fun BookCard(book: Book, onOpen: () -> Unit, onRemove: () -> Unit) {
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(10.dp),
                     )
+                }
+                // Opciones a la vista, además de la pulsación larga
+                IconButton(
+                    onClick = { menu = true },
+                    colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(32.dp),
+                ) {
+                    Icon(Icons.Filled.MoreVert, "Opciones de ${book.title}", modifier = Modifier.size(18.dp))
                 }
                 if (book.progress > 0f) {
                     LinearProgressIndicator(

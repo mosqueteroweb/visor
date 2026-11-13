@@ -60,6 +60,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import com.visor.archivos.core.Streams
 import java.io.Closeable
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -185,9 +186,8 @@ private class PdfDoc(
 
             val temp = File.createTempFile("visor", ".pdf", context.cacheDir)
             try {
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    temp.outputStream().use { input.copyTo(it) }
-                } ?: error("No se puede leer el archivo")
+                context.contentResolver.openInputStream(uri)?.use { Streams.copyToFile(it, temp) }
+                    ?: error("No se puede leer el archivo")
                 val pfd = ParcelFileDescriptor.open(temp, ParcelFileDescriptor.MODE_READ_ONLY)
                 return PdfDoc(PdfRenderer(pfd), pfd, temp)
             } catch (e: Exception) {

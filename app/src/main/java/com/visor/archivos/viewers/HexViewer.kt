@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.visor.archivos.ui.LocalTextScale
 
 private val HexStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
 private const val HEX = "0123456789ABCDEF"
@@ -36,7 +37,7 @@ fun HexViewer(bytes: ByteArray, truncated: Boolean, contentPadding: PaddingValue
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         // 16 bytes por fila solo si caben; en el móvil plegado, 8
-        val perRow = if (maxWidth >= 560.dp) 16 else 8
+        val perRow = if (maxWidth >= 560.dp * LocalTextScale.current) 16 else 8
         val rows = (bytes.size + perRow - 1) / perRow
         val hScroll = rememberScrollState()
 

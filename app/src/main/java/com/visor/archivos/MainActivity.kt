@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -38,7 +39,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -50,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,6 +71,8 @@ import com.visor.archivos.libros.Library
 import com.visor.archivos.libros.ShelfActions
 import com.visor.archivos.libros.ShelfAddButton
 import com.visor.archivos.libros.ShelfContent
+import com.visor.archivos.libros.ShelfUi
+import kotlinx.coroutines.launch
 import com.visor.archivos.ui.AuthorshipDialog
 import com.visor.archivos.ui.VisorTheme
 import com.visor.archivos.ui.sizeLabel
@@ -99,6 +105,9 @@ private fun HomeScreen() {
     val prefs = remember { context.getSharedPreferences("inicio", Context.MODE_PRIVATE) }
     var tab by remember { mutableIntStateOf(prefs.getInt("pestaña", 0)) }
     val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val shelf = remember { ShelfUi(context) }
+    BackHandler(enabled = tab == 1 && shelf.searching) { shelf.closeSearch() }
     var showAuthorship by remember { mutableStateOf(false) }
     if (showAuthorship) AuthorshipDialog { showAuthorship = false }
     LaunchedEffect(Unit) { Library.messages.collect { snackbar.showSnackbar(it) } }
@@ -124,9 +133,16 @@ private fun HomeScreen() {
                     title = { Text("Visor") },
                     actions = {
                         if (tab == 0 && recents.isNotEmpty()) {
-                            TextButton(onClick = { store.clear(); recents = emptyList() }) { Text("Vaciar") }
+                            TextButton(onClick = {
+                                // La lista se oculta ya, pero solo se borra de verdad si no se deshace
+                                recents = emptyList()
+                                scope.launch {
+                                    val result = snackbar.showSnackbar("Recientes vaciados", actionLabel = "Deshacer", duration = SnackbarDuration.Long)
+                                    if (result == SnackbarResult.ActionPerformed) recents = store.list() else store.clear()
+                                }
+                            }) { Text("Vaciar") }
                         }
-                        if (tab == 1) ShelfActions()
+                        if (tab == 1) ShelfActions(shelf)
                         IconButton(onClick = { showAuthorship = true }) { Icon(Icons.Filled.Info, "Autoría") }
                     },
                 )
@@ -150,7 +166,12 @@ private fun HomeScreen() {
         },
     ) { padding ->
         if (tab == 1) {
-            ShelfContent(padding)
+            ShelfContent(padding, shelf) { book ->
+                scope.launch {
+                    val result = snackbar.showSnackbar("«${book.title}» quitado de la estantería", actionLabel = "Deshacer", duration = SnackbarDuration.Long)
+                    if (result == SnackbarResult.ActionPerformed) Library.undoRemove(book.id) else Library.confirmRemoval(book.id)
+                }
+            }
         } else if (recents.isEmpty()) {
             CenteredMessage(
                 title = "Todavía no has abierto nada",
@@ -168,12 +189,14 @@ private fun HomeScreen() {
                     modifier = Modifier.widthIn(max = 1000.dp).fillMaxSize(),
                 ) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
-                        Text(
-                            "Recientes",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-                        )
+                        Column(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
+                            Text("Recientes", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "Solo lo abierto con «Abrir archivo»: lo que llega desde otra app no se puede volver a abrir desde aquí.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     items(recents, key = { it.uri.toString() }) { recent ->
                         RecentRow(

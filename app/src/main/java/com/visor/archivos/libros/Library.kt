@@ -12,6 +12,8 @@ import com.visor.archivos.core.EpubException
 import com.visor.archivos.core.EpubFile
 import com.visor.archivos.core.EpubMeta
 import com.visor.archivos.core.EpubScanner
+import com.visor.archivos.core.Streams
+import com.visor.archivos.core.TooLargeException
 import java.io.File
 import java.io.FileNotFoundException
 import java.security.MessageDigest
@@ -85,7 +87,7 @@ object Library {
     fun init(context: Context) {
         if (::app.isInitialized) return
         app = context.applicationContext
-        runCatching { load() }
+        runCatching { load() }.onSuccess { scope.launch { runCatching { deleteOrphans() } } }
     }
 
     fun get(id: String): Book? = _books.value.firstOrNull { it.id == id }
@@ -93,6 +95,7 @@ object Library {
     /** Mensaje para el usuario a partir de un error al añadir o abrir un libro. */
     fun describe(e: Throwable): String = when (e) {
         is EpubException -> e.message ?: "El libro no es válido."
+        is TooLargeException -> "El libro es demasiado grande o no queda espacio para abrirlo."
         is SecurityException -> "No hay permiso para leer el libro. Vuelve a añadirlo."
         is FileNotFoundException -> "El archivo ya no existe o se ha movido."
         is OutOfMemoryError -> "El libro es demasiado grande para la memoria disponible."
@@ -147,9 +150,7 @@ object Library {
         } else {
             val incoming = File(copiesDir, "entrando-${System.nanoTime()}.epub")
             try {
-                (resolver.openInputStream(uri) ?: throw FileNotFoundException()).use { input ->
-                    incoming.outputStream().use { input.copyTo(it) }
-                }
+                (resolver.openInputStream(uri) ?: throw FileNotFoundException()).use { Streams.copyToFile(it, incoming) }
                 val meta = EpubFile.open(incoming).use { it.meta() }
                 if (meta.drm) throw EpubException(Epub.DRM_MESSAGE)
                 val size = incoming.length()
@@ -185,18 +186,46 @@ object Library {
         scope.launch { _folders.value.map { it.uri }.forEach { scanFolder(it) } }
     }
 
-    /** Quita el libro de la estantería. Nunca borra el archivo original; sí la copia propia y la portada. */
-    fun remove(id: String) {
-        val book = get(id) ?: return
+    // Libros quitados que todavía se pueden recuperar con «Deshacer»
+    private val removed = HashMap<String, Book>()
+
+    /**
+     * Quita el libro de la estantería, pero conserva sus archivos hasta [confirmRemoval] por si se deshace.
+     * Nunca borra el archivo original; al confirmar sí la copia propia y la portada.
+     */
+    fun remove(id: String): Book? {
+        val book = get(id) ?: return null
+        synchronized(removed) { removed[id] = book }
         _books.update { list -> list.filterNot { it.id == id } }
-        when {
-            book.folder != null -> _folders.update { list ->
-                list.map { if (it.uri == book.folder) it.copy(excluded = it.excluded + book.uri) else it }
-            }
-            !book.copy -> release(Uri.parse(book.uri))
+        if (book.folder != null) {
+            _folders.update { list -> list.map { if (it.uri == book.folder) it.copy(excluded = it.excluded + book.uri) else it } }
         }
-        deleteFiles(book)
         scope.launch { save() }
+        return book
+    }
+
+    fun undoRemove(id: String) {
+        val book = synchronized(removed) { removed.remove(id) } ?: return
+        if (book.folder != null) {
+            _folders.update { list -> list.map { if (it.uri == book.folder) it.copy(excluded = it.excluded - book.uri) else it } }
+        }
+        _books.update { list -> if (list.any { it.id == id }) list else list + book }
+        scope.launch { save() }
+    }
+
+    fun confirmRemoval(id: String) {
+        val book = synchronized(removed) { removed.remove(id) } ?: return
+        if (book.folder == null && !book.copy) release(Uri.parse(book.uri))
+        deleteFiles(book)
+    }
+
+    /** Borra copias y portadas que ya no pertenecen a ningún libro (p. ej. si la app se cerró antes de confirmar). */
+    private fun deleteOrphans() {
+        val keep = _books.value.flatMap { b -> listOfNotNull(b.cover, if (b.copy) Uri.parse(b.uri).path else null) }.toHashSet()
+        // Solo lo que lleva un rato sin tocarse: lo reciente puede ser un libro que se está añadiendo ahora
+        val old = System.currentTimeMillis() - 10 * 60 * 1000
+        (copiesDir.listFiles()?.toList().orEmpty() + coversDir.listFiles()?.toList().orEmpty())
+            .forEach { if (it.absolutePath !in keep && it.lastModified() < old) it.delete() }
     }
 
     /** Quita la carpeta y todos sus libros de la estantería (los archivos se quedan donde están). */
@@ -228,9 +257,7 @@ object Library {
         val target = File(readingDir, "${book.id}.epub")
         if (!(target.exists() && book.size > 0 && target.length() == book.size)) {
             val partial = File(readingDir, "${book.id}.parcial")
-            (app.contentResolver.openInputStream(uri) ?: throw FileNotFoundException()).use { input ->
-                partial.outputStream().use { input.copyTo(it) }
-            }
+            (app.contentResolver.openInputStream(uri) ?: throw FileNotFoundException()).use { Streams.copyToFile(it, partial) }
             target.delete()
             partial.renameTo(target)
         }
@@ -342,9 +369,7 @@ object Library {
         // Algunos ZIP no se pueden leer en flujo: se copian y se abren con acceso aleatorio
         val temp = File.createTempFile("analisis", ".epub", app.cacheDir)
         try {
-            (app.contentResolver.openInputStream(uri) ?: throw FileNotFoundException()).use { input ->
-                temp.outputStream().use { input.copyTo(it) }
-            }
+            (app.contentResolver.openInputStream(uri) ?: throw FileNotFoundException()).use { Streams.copyToFile(it, temp) }
             EpubFile.open(temp).use { it.meta() }
         } finally {
             temp.delete()

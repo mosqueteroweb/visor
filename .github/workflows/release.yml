@@ -24,6 +24,9 @@ jobs:
         with:
           java-version: '17'
           distribution: temurin
+      - name: Comprobar el arranque de Gradle
+        # El .jar del arranque se ejecuta antes que nada: tiene que ser el oficial de esta versión
+        run: echo "ad16bca46cb71bb5887c546860d93992aeee35c1fdaf4a242b0a612375d937e0  gradle/wrapper/gradle-wrapper.jar" | sha256sum -c -
       - name: Tests y compilación
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: ./gradlew testDebugUnitTest assembleRelease --no-daemon

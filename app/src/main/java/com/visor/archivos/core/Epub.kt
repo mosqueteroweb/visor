@@ -211,9 +211,14 @@ class EpubFile private constructor(private val zip: ZipFile) : Closeable {
 
     fun open(entry: ZipEntry): InputStream = zip.getInputStream(entry)
 
-    fun bytes(path: String): ByteArray? = entry(path)?.let { e -> open(e).use { it.readBytes() } }
+    /** Contenido de una entrada, o null si no existe o supera [max] al descomprimir (bomba de compresión). */
+    fun bytes(path: String, max: Int = MAX_ENTRY_BYTES): ByteArray? =
+        entry(path)?.let { e -> open(e).use { Streams.readLimited(it, max) } }
 
     fun text(path: String): String? = bytes(path)?.let { TextDecoder.decode(it).text }
+
+    /** Verdadero si la entrada existe pero es demasiado grande para cargarla en memoria. */
+    fun tooLarge(path: String): Boolean = entry(path) != null && bytes(path) == null
 
     /** Tamaño sin comprimir de un capítulo, para calcular el progreso. */
     fun size(path: String): Long = entry(path)?.size?.takeIf { it > 0 } ?: 1L
@@ -223,6 +228,9 @@ class EpubFile private constructor(private val zip: ZipFile) : Closeable {
     override fun close() = zip.close()
 
     companion object {
+        /** Un capítulo real ocupa kilobytes; por encima de esto no se carga en memoria. */
+        const val MAX_ENTRY_BYTES = 12 shl 20
+
         fun open(file: File): EpubFile {
             val zip = try {
                 ZipFile(file)

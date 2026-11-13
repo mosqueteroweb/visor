@@ -243,3 +243,29 @@ class EpubTest {
         assertEquals(FileKind.BINARY, TypeDetector.detect("PK\u0003\u0004\u0000\u0000".toByteArray(Charsets.ISO_8859_1), "a.zip", null))
     }
 }
+
+class LimitsTest {
+    @Test fun `lecturas y copias con tope`() {
+        val data = ByteArray(1000) { 7 }
+        assertEquals(1000, Streams.readLimited(data.inputStream(), 1000)!!.size)
+        assertEquals(null, Streams.readLimited(data.inputStream(), 999))
+        val out = java.io.ByteArrayOutputStream()
+        Streams.copyLimited(data.inputStream(), out, 1000)
+        assertEquals(1000, out.size())
+        assertTrue(runCatching { Streams.copyLimited(data.inputStream(), java.io.ByteArrayOutputStream(), 999) }.exceptionOrNull() is TooLargeException)
+    }
+
+    @Test fun `un capitulo desmesurado no se carga`() {
+        val file = File.createTempFile("grande", ".epub").apply { deleteOnExit() }
+        ZipOutputStream(file.outputStream()).use { zip ->
+            fun add(name: String, content: ByteArray) { zip.putNextEntry(ZipEntry(name)); zip.write(content); zip.closeEntry() }
+            add("META-INF/container.xml", "<container><rootfiles><rootfile full-path=\"c.opf\"/></rootfiles></container>".toByteArray())
+            add("c.opf", "<package><manifest><item id=\"a\" href=\"a.html\" media-type=\"application/xhtml+xml\"/></manifest><spine><itemref idref=\"a\"/></spine></package>".toByteArray())
+            add("a.html", ByteArray(EpubFile.MAX_ENTRY_BYTES + 1) { 'x'.code.toByte() })
+        }
+        EpubFile.open(file).use { book ->
+            assertEquals(null, book.text("a.html"))
+            assertTrue(book.tooLarge("a.html") && !book.tooLarge("no-existe.html"))
+        }
+    }
+}

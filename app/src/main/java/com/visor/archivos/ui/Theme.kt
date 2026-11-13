@@ -9,6 +9,10 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import com.visor.archivos.core.FileKind
@@ -53,3 +57,17 @@ fun kindLabel(kind: FileKind, name: String): String {
 @Composable
 fun sizeLabel(size: Long): String? =
     if (size >= 0) Formatter.formatShortFileSize(LocalContext.current, size) else null
+
+/** Escala de letra de los visores (1 = tamaño normal); la usan para ensanchar márgenes y columnas a juego. */
+val LocalTextScale = compositionLocalOf { 1f }
+
+/** Agranda o reduce toda la letra de [content] sin tocar el resto de medidas. */
+@Composable
+fun ScaledContent(scale: Float, content: @Composable () -> Unit) {
+    val density = LocalDensity.current
+    CompositionLocalProvider(
+        LocalDensity provides Density(density.density, density.fontScale * scale),
+        LocalTextScale provides scale,
+        content = content,
+    )
+}

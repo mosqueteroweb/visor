@@ -8,6 +8,9 @@ import android.net.Uri
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.GestureDetector
+import android.view.KeyEvent
+import android.view.accessibility.AccessibilityManager
+import android.webkit.RenderProcessGoneDetail
 import android.view.MotionEvent
 import android.view.View
 import android.webkit.MimeTypeMap
@@ -15,6 +18,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -45,13 +49,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Slider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -78,6 +86,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -103,6 +113,14 @@ import org.json.JSONObject
 
 /** Lector de ePub: por páginas (una o dos por pantalla) o en vertical continuo, un capítulo cada vez. */
 class ReaderActivity : ComponentActivity() {
+    /** Recibe (tecla, pulsada) y dice si la tecla es suya; lo instala el lector para pasar página. */
+    var onKey: ((Int, Boolean) -> Boolean)? = null
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (onKey?.invoke(event.keyCode, event.action == KeyEvent.ACTION_DOWN) == true) return true
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -126,6 +144,9 @@ private const val HOST = "libro.visor"
 private const val OWN_PREFIX = "__visor/"
 private const val TWO_PAGES_MIN_DP = 600
 private val htmlExtensions = setOf("html", "htm", "xhtml")
+
+/** Únicos enlaces externos que un libro puede ofrecer; nada de llamadas ni enlaces a otras apps. */
+private val externalSchemes = setOf("http", "https", "mailto")
 
 // En HTML, <a id="x"/> o <title/> no se cierran solos y se tragan el resto del capítulo
 private val selfClosing = Regex(
@@ -288,6 +309,12 @@ private class ReaderPrefs(context: Context) {
     var paged: Boolean
         get() = prefs.getBoolean("paginado", true)
         set(value) = prefs.edit().putBoolean("paginado", value).apply()
+    var volumeKeys: Boolean
+        get() = prefs.getBoolean("teclasVolumen", true)
+        set(value) = prefs.edit().putBoolean("teclasVolumen", value).apply()
+    var hintSeen: Boolean
+        get() = prefs.getBoolean("ayudaVista", false)
+        set(value) = prefs.edit().putBoolean("ayudaVista", value).apply()
 
     private inline fun <reified T : Enum<T>> enumPref(key: String, default: T): T =
         prefs.getString(key, null)?.let { name -> enumValues<T>().firstOrNull { it.name == name } } ?: default
@@ -339,6 +366,10 @@ private class ReaderController(private val context: Context, val epub: EpubFile,
 
     /** Al pasar página se recogen las barras, que si no tapan el principio y el final del texto. */
     var onTurn: () -> Unit = {}
+
+    /** Un enlace hacia fuera del libro que el lector ha tocado: se pregunta antes de abrirlo. */
+    var onExternalLink: (Uri) -> Unit = {}
+    var onRendererGone: () -> Unit = {}
     private var pending: Float? = null
     private var pendingAnchor: String? = null
     private var restoring = false
@@ -412,9 +443,9 @@ private class ReaderController(private val context: Context, val epub: EpubFile,
     }
 
     /** Pasa página; al salirse del capítulo continúa en el siguiente o en el final del anterior. */
-    fun turn(delta: Int) {
+    fun turn(delta: Int, byGesture: Boolean = true) {
         if (!paged) return
-        onTurn()
+        if (byGesture) onTurn()
         web.evaluateJavascript("window.__v ? __v.turn($delta) : ''") { raw ->
             when (val result = raw?.trim('"')) {
                 "prev" -> if (chapter > 0) go(chapter - 1, at = 1f)
@@ -425,6 +456,19 @@ private class ReaderController(private val context: Context, val epub: EpubFile,
                 }
             }
         }
+    }
+
+    /** Capítulo en el que cae una proporción del libro entero. */
+    fun chapterAt(progress: Float): Int {
+        val target = progress.coerceIn(0f, 1f) * before.last()
+        return spine.indices.firstOrNull { target < before[it + 1] } ?: spine.lastIndex
+    }
+
+    /** Salta a una proporción del libro entero (barra de progreso). */
+    fun seek(progress: Float) {
+        val index = chapterAt(progress)
+        val target = progress.coerceIn(0f, 1f) * before.last()
+        go(index, at = ((target - before[index]) / sizes[index]).toFloat().coerceIn(0f, 1f))
     }
 
     private fun layout() {
@@ -474,19 +518,24 @@ private class ReaderController(private val context: Context, val epub: EpubFile,
         val ext = path.substringAfterLast('.', "").lowercase()
         return try {
             if (ext in htmlExtensions || path in spineSet) {
-                val html = decorate(path, epub.text(path).orEmpty())
+                // Un capítulo desmesurado (bomba de compresión) no se carga: agotaría la memoria
+                val source = epub.text(path)
+                    ?: "<html><head></head><body><p>Este capítulo es demasiado grande para mostrarlo.</p></body></html>"
+                val html = decorate(path, source)
                 // La app necesita JavaScript para paginar, pero el del libro no se ejecuta nunca
                 val headers = mapOf("Content-Security-Policy" to "script-src 'none'; object-src 'none'; frame-src 'none'")
                 WebResourceResponse("text/html", "utf-8", 200, "OK", headers, ByteArrayInputStream(html.toByteArray()))
             } else {
                 WebResourceResponse(mimeFor(ext), null, epub.open(entry))
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             empty(500, "Error")
         }
     }
 
-    fun navigate(url: Uri): Boolean {
+    fun navigate(url: Uri, byUser: Boolean): Boolean {
+        // Solo se navega cuando el lector toca un enlace: un libro no puede saltar ni abrir nada por su cuenta
+        if (!byUser) return true
         if (url.host == HOST) {
             val path = url.path.orEmpty().removePrefix("/")
             if (path.equals(spine[chapter], ignoreCase = true)) {
@@ -500,8 +549,7 @@ private class ReaderController(private val context: Context, val epub: EpubFile,
             if (index >= 0) go(index, url.fragment)
             return true
         }
-        // Enlaces externos: a la app que corresponda (navegador, correo…)
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, url)) }
+        if (url.scheme in externalSchemes) onExternalLink(url)
         return true
     }
 
@@ -562,7 +610,13 @@ private fun createWebView(context: Context, controller: ReaderController, textZo
             controller.serve(request.url)
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-            controller.navigate(request.url)
+            controller.navigate(request.url, request.hasGesture())
+
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            // Sin esto, un libro que tumbe el motor de dibujo cerraría la app entera
+            controller.onRendererGone()
+            return true
+        }
 
         override fun onPageFinished(view: WebView, url: String?) = controller.onPageFinished()
     }
@@ -670,6 +724,10 @@ private fun Reader(book: Book, epub: EpubFile, onBack: () -> Unit) {
     var barsVisible by rememberSaveable { mutableStateOf(true) }
     var showToc by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var externalLink by remember { mutableStateOf<Uri?>(null) }
+    var volumeKeys by remember { mutableStateOf(prefs.volumeKeys) }
+    var showHint by remember { mutableStateOf(!prefs.hintSeen) }
+    var seeking by remember { mutableStateOf<Float?>(null) }
 
     // Alto de las barras del sistema, medido una vez (luego se ocultan y valdría cero)
     val statusInset = WindowInsets.statusBars.getTop(density)
@@ -700,7 +758,14 @@ private fun Reader(book: Book, epub: EpubFile, onBack: () -> Unit) {
         createWebView(context, controller, textZoom(zoom), colors.background) { barsVisible = !barsVisible }.also {
             controller.web = it
             controller.onPositionChange = { save() }
-            controller.onTurn = { barsVisible = false }
+            // Con TalkBack las barras se quedan: en ellas están los botones de pasar página
+            val accessibility = context.getSystemService(AccessibilityManager::class.java)
+            controller.onTurn = { if (accessibility?.isTouchExplorationEnabled != true) barsVisible = false }
+            controller.onExternalLink = { externalLink = it }
+            controller.onRendererGone = {
+                Toast.makeText(context, "Este libro no se puede mostrar.", Toast.LENGTH_LONG).show()
+                onBack()
+            }
         }
     }
 
@@ -737,6 +802,27 @@ private fun Reader(book: Book, epub: EpubFile, onBack: () -> Unit) {
     DisposableEffect(web) { onDispose { web.destroy() } }
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { save() }
 
+    // Teclado y botones de volumen: otra forma de pasar página, también con lector de pantalla
+    DisposableEffect(controller) {
+        val reader = activity as? ReaderActivity
+        reader?.onKey = { code, down ->
+            val delta = when (code) {
+                KeyEvent.KEYCODE_VOLUME_DOWN -> if (volumeKeys) 1 else 0
+                KeyEvent.KEYCODE_VOLUME_UP -> if (volumeKeys) -1 else 0
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_SPACE -> 1
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_PAGE_UP -> -1
+                else -> 0
+            }
+            if (delta != 0 && controller.paged) {
+                if (down) controller.turn(delta)
+                true
+            } else {
+                false
+            }
+        }
+        onDispose { reader?.onKey = null }
+    }
+
     LaunchedEffect(barsVisible) {
         val bars = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
         bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -752,8 +838,8 @@ private fun Reader(book: Book, epub: EpubFile, onBack: () -> Unit) {
         if (paged && !barsVisible) {
             Text(
                 "${controller.page + 1} / ${controller.pageCount} · $percent %",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(colors.foreground).copy(alpha = 0.55f),
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(colors.foreground).copy(alpha = 0.8f),
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = (insets.second + 12).dp),
             )
         }
@@ -785,21 +871,84 @@ private fun Reader(book: Book, epub: EpubFile, onBack: () -> Unit) {
 
         AnimatedVisibility(barsVisible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
             Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp),
                 ) {
-                    val chapterLabel = "Capítulo ${controller.chapter + 1} de ${controller.spine.size}"
-                    Text(
-                        if (paged) "Página ${controller.page + 1} de ${controller.pageCount} · $chapterLabel · $percent %" else "$chapterLabel · $percent %",
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    LinearProgressIndicator(progress = { controller.progress }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                    if (paged) {
+                        IconButton(onClick = { controller.turn(-1, byGesture = false) }) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Página anterior")
+                        }
+                    }
+                    Column(Modifier.weight(1f).padding(horizontal = if (paged) 4.dp else 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        val target = seeking
+                        val chapterLabel = "Capítulo ${controller.chapter + 1} de ${controller.spine.size}"
+                        Text(
+                            when {
+                                target != null -> "Ir al ${(target * 100).roundToInt()} % · Capítulo ${controller.chapterAt(target) + 1}"
+                                paged -> "Página ${controller.page + 1} de ${controller.pageCount} · $chapterLabel · $percent %"
+                                else -> "$chapterLabel · $percent %"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        // Arrastrando se salta a cualquier punto del libro
+                        Slider(
+                            value = target ?: controller.progress,
+                            onValueChange = { seeking = it },
+                            onValueChangeFinished = {
+                                seeking?.let(controller::seek)
+                                seeking = null
+                            },
+                            modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Posición en el libro" },
+                        )
+                    }
+                    if (paged) {
+                        IconButton(onClick = { controller.turn(1, byGesture = false) }) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Página siguiente")
+                        }
+                    }
                 }
             }
         }
+    }
+
+    // Primera vez: dónde tocar para pasar página
+    if (paged && showHint) {
+        fun dismiss() {
+            showHint = false
+            prefs.hintSeen = true
+        }
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.9f)).clickable(onClickLabel = "Entendido") { dismiss() }) {
+            Row(Modifier.fillMaxSize()) {
+                @Composable
+                fun zone(weight: Float, text: String) = Box(Modifier.weight(weight).fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+                    Text(text, color = Color.White, textAlign = TextAlign.Center, style = MaterialTheme.typography.titleMedium)
+                }
+                zone(0.3f, "‹\nPágina anterior")
+                zone(0.4f, "Toca el centro para ver el menú\n\nTambién puedes deslizar o usar los botones de volumen")
+                zone(0.3f, "›\nPágina siguiente")
+            }
+            Button(onClick = { dismiss() }, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 48.dp)) {
+                Text("Entendido")
+            }
+        }
+    }
+
+    externalLink?.let { link ->
+        AlertDialog(
+            onDismissRequest = { externalLink = null },
+            title = { Text("¿Abrir este enlace?") },
+            text = { Text("El libro enlaza a una dirección de fuera:\n\n$link") },
+            confirmButton = {
+                TextButton(onClick = {
+                    externalLink = null
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, link)) }
+                }) { Text("Abrir") }
+            },
+            dismissButton = { TextButton(onClick = { externalLink = null }) { Text("Cancelar") } },
+        )
     }
 
     if (showToc) {
@@ -866,6 +1015,10 @@ private fun Reader(book: Book, epub: EpubFile, onBack: () -> Unit) {
                         prefs.columns = it
                         columns = columnsFor(if (widthDp > 0) widthDp else screenWidthDp)
                         restyle()
+                    }
+                    choice("Pasar página con los botones de volumen", listOf(true, false), volumeKeys, { if (it) "Sí" else "No" }) {
+                        volumeKeys = it
+                        prefs.volumeKeys = it
                     }
                 }
             }

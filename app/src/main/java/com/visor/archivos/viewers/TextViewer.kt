@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.visor.archivos.core.Row as TextRow
 import com.visor.archivos.core.TextDoc
+import com.visor.archivos.ui.LocalTextScale
 import com.visor.archivos.ui.tokenColor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -82,7 +83,7 @@ fun TextViewer(
     val matchColor = MaterialTheme.colorScheme.tertiaryContainer
     val currentRowColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val gutterColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val gutterWidth = (doc.lineCount.toString().length * 9 + 14).dp
+    val gutterWidth = (doc.lineCount.toString().length * 9 + 14).dp * LocalTextScale.current
 
     LaunchedEffect(doc, search.query) {
         if (search.query.isEmpty()) {
@@ -123,7 +124,7 @@ fun TextViewer(
                     Text(
                         text = row.number?.toString().orEmpty(),
                         style = CodeStyle,
-                        color = gutterColor.copy(alpha = 0.7f),
+                        color = gutterColor,
                         textAlign = TextAlign.End,
                         modifier = Modifier.width(gutterWidth).padding(end = 10.dp),
                     )
