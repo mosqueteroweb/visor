@@ -74,7 +74,14 @@ fun AuthorshipDialog(onDismiss: () -> Unit) {
                         Text("Visor ${BuildConfig.VERSION_NAME} · Mosqueteroweb", style = MaterialTheme.typography.titleMedium)
                         Text("Aplicación de código libre · GNU GPLv3")
                         TextButton(onClick = { openLink(context, REPO) }) { Text("Código fuente y contacto") }
-                        TextButton(onClick = { openLink(context, "$REPO/releases") }) { Text("Versiones publicadas") }
+                        TextButton(onClick = { openLink(context, "$REPO/releases/latest") }) { Text("Actualizaciones") }
+                        Text(
+                            "Descarga ahí el APK de la última versión e instálalo encima: se conservan la estantería, " +
+                                "el punto de lectura de cada libro y los ajustes. Solo se pierden si desinstalas la app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 12.dp),
+                        )
                         Text("Bibliotecas y licencias", style = MaterialTheme.typography.titleLarge)
                         Text("Los avisos y textos completos siguientes se incluyen en la aplicación y pueden consultarse sin conexión.")
                     }
