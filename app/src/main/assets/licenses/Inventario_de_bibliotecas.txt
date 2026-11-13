@@ -1,0 +1,13 @@
+Bibliotecas incluidas en Visor y su licencia.
+
+Licencia Apache 2.0 (texto completo en «Apache 2.0»):
+- AndroidX y Jetpack Compose (Google)
+- Kotlin y kotlinx.coroutines (JetBrains)
+- Coil, con sus módulos GIF y SVG (Coil Contributors); incluye AndroidSVG
+- Telephoto (Saket Narayan)
+- Multiplatform Markdown Renderer (Mike Penz)
+- JetBrains Markdown (JetBrains)
+- OkHttp y Okio (Square)
+
+Licencia SIL Open Font 1.1 (texto completo en «Atkinson Hyperlegible OFL»):
+- Tipo de letra Atkinson Hyperlegible (Braille Institute of America)

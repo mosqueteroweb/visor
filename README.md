@@ -13,7 +13,7 @@ Aparece en «Abrir con» y en «Compartir» de cualquier app, y no pide ningún 
 | CSV y TSV | Como tabla con cabecera fija, búsqueda por filas e ir a una fila. Detecta el separador |
 | Markdown | Con formato o en código fuente |
 | Partidas PGN | Como texto resaltado, con botones para analizarlas en chess.com o en Lichess (si hay varias, se elige cuál) |
-| Libros ePub | Lector por capítulos con índice, tamaño de letra, temas claro, sepia y oscuro, pantalla completa y recuerdo del punto de lectura. Sin DRM |
+| Libros ePub | Lector por páginas (una o dos por pantalla) o en vertical continuo, con índice, tamaño y tipo de letra, temas claro, sepia y oscuro, pantalla completa y recuerdo del punto de lectura. Sin DRM |
 | Imágenes | JPG, PNG, WebP, GIF, HEIC, AVIF, BMP y SVG, con zoom |
 | PDF | Páginas continuas, zoom con dos dedos o doble toque, búsqueda de texto y vista solo texto |
 | Cualquier otro | Volcado hexadecimal |
@@ -25,6 +25,12 @@ El tipo se decide por el contenido del archivo, no por su extensión. Desde el m
 La pestaña «Libros» guarda los ePub abiertos y los de las carpetas que se añadan (se analizan también las subcarpetas). Muestra portada y progreso, y permite quitar libros o carpetas sin borrar los archivos. «Volver a analizar carpetas» recoge los libros nuevos y quita los que ya no están.
 
 Los ePub que llegan desde otra app sin permiso duradero se copian dentro de Visor para que sigan en la estantería; al quitarlos, se borra esa copia.
+
+## Lector de libros
+
+Por defecto se lee por páginas: un toque en el lateral derecho avanza, en el izquierdo retrocede y en el centro muestra las barras; también se puede deslizar. En pantallas anchas se ven dos páginas, y se puede forzar una o dos. En «Aa» se cambia a vertical continuo, el tamaño y el tipo de letra (incluida Atkinson Hyperlegible, pensada para baja visión) y el tema.
+
+El código que traiga un libro no se ejecuta, y el lector no hace ninguna petición a internet.
 
 ## Otras funciones
 
@@ -68,3 +74,7 @@ La clave de firma se crea una sola vez con `scripts/setup-signing.sh`, que la gu
 - `core/`: detección de tipo, decodificación de texto, resaltado y recientes. Sin interfaz, con tests.
 - `viewers/`: un visor por tipo (texto, imagen, PDF, hexadecimal).
 - `ViewerActivity`: recibe los archivos y elige el visor. `MainActivity`: inicio y recientes.
+
+## Licencia
+
+Visor es software libre bajo la licencia GNU GPLv3 (ver `LICENSE`). Las bibliotecas que incluye y sus licencias se pueden consultar en la propia app, en «Autoría».

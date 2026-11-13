@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -66,6 +67,7 @@ import com.visor.archivos.libros.Library
 import com.visor.archivos.libros.ShelfActions
 import com.visor.archivos.libros.ShelfAddButton
 import com.visor.archivos.libros.ShelfContent
+import com.visor.archivos.ui.AuthorshipDialog
 import com.visor.archivos.ui.VisorTheme
 import com.visor.archivos.ui.sizeLabel
 import com.visor.archivos.viewers.CenteredMessage
@@ -97,6 +99,8 @@ private fun HomeScreen() {
     val prefs = remember { context.getSharedPreferences("inicio", Context.MODE_PRIVATE) }
     var tab by remember { mutableIntStateOf(prefs.getInt("pestaña", 0)) }
     val snackbar = remember { SnackbarHostState() }
+    var showAuthorship by remember { mutableStateOf(false) }
+    if (showAuthorship) AuthorshipDialog { showAuthorship = false }
     LaunchedEffect(Unit) { Library.messages.collect { snackbar.showSnackbar(it) } }
     // Al volver del visor la lista puede haber cambiado
     LifecycleResumeEffect(Unit) {
@@ -123,6 +127,7 @@ private fun HomeScreen() {
                             TextButton(onClick = { store.clear(); recents = emptyList() }) { Text("Vaciar") }
                         }
                         if (tab == 1) ShelfActions()
+                        IconButton(onClick = { showAuthorship = true }) { Icon(Icons.Filled.Info, "Autoría") }
                     },
                 )
                 PrimaryTabRow(selectedTabIndex = tab) {
